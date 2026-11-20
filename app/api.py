@@ -68,20 +68,18 @@ async def onboarding(payload: dict = Body(...), x_telegram_init_data: str | None
     if telegram_id in settings.admin_ids:
         return row_dict(upsert_user(telegram_id, payload.get("full_name", "Администратор"), "admin"))
     existing = user_by_telegram_id(telegram_id)
-    if not existing or not existing["phone"]:
-        raise HTTPException(400, "Сначала подтвердите номер телефона через Telegram")
     full_name = str(payload.get("full_name", "")).strip()
     role = payload.get("role")
     if not full_name or role not in {"waiter", "bartender", "admin"}:
         raise HTTPException(400, "Заполните ФИО и роль")
-    user = create_pending_user(telegram_id, full_name, existing["phone"], role)
+    user = create_pending_user(telegram_id, full_name, "", role)
     notification_sent = False
     if settings.bot_token and settings.admin_ids:
         bot = Bot(settings.bot_token)
         try:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"access:approved:{user['id']}"), InlineKeyboardButton(text="Отклонить", callback_data=f"access:rejected:{user['id']}")]])
             for admin_id in settings.admin_ids:
-                await bot.send_message(admin_id, f"Новая заявка на доступ\nФИО: {full_name}\nТелефон: {existing['phone']}\nРоль: {role}", reply_markup=keyboard)
+                await bot.send_message(admin_id, f"Новая заявка на доступ\nФИО: {full_name}\nРоль: {role}", reply_markup=keyboard)
             notification_sent = True
         except Exception:
             logging.exception("Не удалось уведомить администраторов о заявке пользователя %s", telegram_id)

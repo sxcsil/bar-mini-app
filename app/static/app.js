@@ -25,7 +25,7 @@ async function loadMe() {
     if (!response.ok) throw new Error("auth");
     const user = await response.json();
     $("#greeting").textContent = `Привет, ${user.full_name.split(" ")[0]}`;
-    if (user.status !== "approved") { $("#onboarding").hidden = false; $("#home-content").hidden = true; document.querySelectorAll(".tab:not([data-page='home']):not([data-page='recipes'])").forEach((tab) => tab.hidden = true); $("#onboarding-result").textContent = user.status === "pending" ? "Заявка уже отправлена. Дождитесь подтверждения администратора." : "Заполните анкету для доступа."; }
+    if (user.status !== "approved") { $("#onboarding").hidden = false; $("#home-content").hidden = true; $("#onboarding .muted").textContent = "Заполните анкету. Администратор подтвердит доступ в личном чате."; document.querySelectorAll(".tab:not([data-page='home']):not([data-page='recipes'])").forEach((tab) => tab.hidden = true); $("#onboarding-result").textContent = user.status === "pending" ? "Заявка уже отправлена. Дождитесь подтверждения администратора." : "Заполните анкету для доступа."; }
     if (user.role === "admin") { isAdmin = true; document.querySelectorAll(".admin-only").forEach((element) => element.classList.add("visible")); const addButton = $("#new-recipe"); if (addButton) $("#recipes .section-head").append(addButton); loadAdmin(); }
   } catch { $("#greeting").textContent = "Барная смена"; }
 }
