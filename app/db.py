@@ -88,7 +88,10 @@ def upsert_user(telegram_id: int, full_name: str, role: str | None = None) -> sq
     with connect() as db:
         existing = db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
         if existing:
-            db.execute("UPDATE users SET full_name = ? WHERE telegram_id = ?", (full_name, telegram_id))
+            if role:
+                db.execute("UPDATE users SET full_name = ?, role = ? WHERE telegram_id = ?", (full_name, role, telegram_id))
+            else:
+                db.execute("UPDATE users SET full_name = ? WHERE telegram_id = ?", (full_name, telegram_id))
         else:
             db.execute("INSERT INTO users(telegram_id, full_name, role, created_at) VALUES (?, ?, ?, ?)", (telegram_id, full_name, role or "bartender", datetime.utcnow().isoformat()))
         return db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
