@@ -73,6 +73,16 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 processed_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS shift_swap_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                requester_id INTEGER NOT NULL REFERENCES users(id),
+                target_user_id INTEGER REFERENCES users(id),
+                request_date TEXT NOT NULL,
+                comment TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                processed_at TEXT
+            );
             """
         )
         if db.execute("SELECT COUNT(*) FROM recipes").fetchone()[0] == 0:

@@ -71,6 +71,14 @@ def schedule(x_telegram_init_data: str | None = Header(default=None)):
     return [row_dict(row) for row in rows]
 
 
+@app.get("/api/staff")
+def staff(x_telegram_init_data: str | None = Header(default=None)):
+    current_user(x_telegram_init_data)
+    with connect() as db:
+        rows = db.execute("SELECT id, full_name FROM users WHERE is_active = 1 AND role = 'bartender' ORDER BY full_name").fetchall()
+    return [row_dict(row) for row in rows]
+
+
 @app.get("/api/admin/overview")
 def admin_overview(x_telegram_init_data: str | None = Header(default=None)):
     admin_user(x_telegram_init_data)
@@ -78,6 +86,7 @@ def admin_overview(x_telegram_init_data: str | None = Header(default=None)):
         recipes = db.execute("SELECT * FROM recipes WHERE is_active = 1 ORDER BY sort_order, title").fetchall()
         users = db.execute("SELECT id, telegram_id, full_name, role, is_active FROM users ORDER BY full_name").fetchall()
         requests = db.execute("SELECT r.*, u.full_name FROM day_off_requests r JOIN users u ON u.id = r.user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
+        swaps = db.execute("SELECT r.*, u.full_name AS requester_name, t.full_name AS target_name FROM shift_swap_requests r JOIN users u ON u.id = r.requester_id LEFT JOIN users t ON t.id = r.target_user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
         shifts = db.execute("SELECT s.*, u.full_name FROM shifts s JOIN users u ON u.id = s.user_id ORDER BY s.created_at DESC LIMIT 50").fetchall()
         schedules = db.execute("SELECT s.*, u.full_name FROM schedules s JOIN users u ON u.id = s.user_id WHERE s.work_date >= date('now', '-7 day') ORDER BY s.work_date, u.full_name").fetchall()
     recipe_items = []
@@ -85,7 +94,34 @@ def admin_overview(x_telegram_init_data: str | None = Header(default=None)):
         item = row_dict(row)
         item["ingredients"] = json.loads(item["ingredients"])
         recipe_items.append(item)
-    return {"recipes": recipe_items, "users": [row_dict(row) for row in users], "requests": [row_dict(row) for row in requests], "shifts": [row_dict(row) for row in shifts], "schedules": [row_dict(row) for row in schedules]}
+    return {"recipes": recipe_items, "users": [row_dict(row) for row in users], "requests": [row_dict(row) for row in requests], "swaps": [row_dict(row) for row in swaps], "shifts": [row_dict(row) for row in shifts], "schedules": [row_dict(row) for row in schedules]}
+
+
+@app.get("/api/admin/calendar")
+def admin_calendar(month: str = "", x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data)
+    month = month or date.today().strftime("%Y-%m")
+    try:
+        datetime.strptime(month, "%Y-%m")
+    except ValueError as exc:
+        raise HTTPException(400, "Месяц должен быть в формате YYYY-MM") from exc
+    with connect() as db:
+        rows = db.execute("SELECT s.id, s.user_id, s.work_date, u.full_name FROM schedules s JOIN users u ON u.id = s.user_id WHERE substr(s.work_date, 1, 7) = ? ORDER BY s.work_date, u.full_name", (month,)).fetchall()
+    return [row_dict(row) for row in rows]
+
+
+@app.post("/api/admin/calendar/day")
+def set_calendar_day(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data)
+    try:
+        work_date = date.fromisoformat(str(payload["work_date"]))
+        user_ids = [int(value) for value in payload.get("user_ids", [])]
+    except (KeyError, ValueError, TypeError) as exc:
+        raise HTTPException(400, "Укажите дату и список сотрудников") from exc
+    with connect() as db:
+        db.execute("DELETE FROM schedules WHERE work_date = ?", (work_date.isoformat(),))
+        db.executemany("INSERT INTO schedules(user_id, work_date, shift_type, created_at) VALUES (?, ?, 'work', ?)", [(user_id, work_date.isoformat(), datetime.utcnow().isoformat()) for user_id in user_ids])
+    return {"ok": True}
 
 
 @app.post("/api/admin/recipes")
@@ -100,7 +136,7 @@ def create_recipe(payload: dict = Body(...), x_telegram_init_data: str | None = 
         ingredients = [line.strip() for line in ingredients.splitlines() if line.strip()]
     now = datetime.utcnow().isoformat()
     with connect() as db:
-        cursor = db.execute("INSERT INTO recipes(title, category, ingredients, recipe_text, notes, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (title, payload.get("category", "Коктейль"), json.dumps(ingredients, ensure_ascii=False), recipe_text, payload.get("notes", ""), int(payload.get("sort_order", 0)), now, now))
+        cursor = db.execute("INSERT INTO recipes(title, category, ingredients, recipe_text, notes, photo_url, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (title, payload.get("category", "Коктейль"), json.dumps(ingredients, ensure_ascii=False), recipe_text, payload.get("notes", ""), payload.get("photo_url", ""), int(payload.get("sort_order", 0)), now, now))
     return {"id": cursor.lastrowid}
 
 
@@ -114,7 +150,7 @@ def update_recipe(recipe_id: int, payload: dict = Body(...), x_telegram_init_dat
         exists = db.execute("SELECT id FROM recipes WHERE id = ?", (recipe_id,)).fetchone()
         if not exists:
             raise HTTPException(404, "Техкарта не найдена")
-        db.execute("UPDATE recipes SET title=?, category=?, ingredients=?, recipe_text=?, notes=?, sort_order=?, updated_at=? WHERE id=?", (payload.get("title", ""), payload.get("category", "Коктейль"), json.dumps(ingredients, ensure_ascii=False), payload.get("recipe_text", ""), payload.get("notes", ""), int(payload.get("sort_order", 0)), datetime.utcnow().isoformat(), recipe_id))
+        db.execute("UPDATE recipes SET title=?, category=?, ingredients=?, recipe_text=?, notes=?, photo_url=?, sort_order=?, updated_at=? WHERE id=?", (payload.get("title", ""), payload.get("category", "Коктейль"), json.dumps(ingredients, ensure_ascii=False), payload.get("recipe_text", ""), payload.get("notes", ""), payload.get("photo_url", ""), int(payload.get("sort_order", 0)), datetime.utcnow().isoformat(), recipe_id))
     return {"ok": True}
 
 
@@ -190,9 +226,26 @@ async def day_off(request_date: str = Form(...), x_telegram_init_data: str | Non
     return {"ok": True}
 
 
+@app.post("/api/shift-swap")
+async def shift_swap(request_date: str = Form(...), target_user_id: int | None = Form(default=None), comment: str = Form(""), x_telegram_init_data: str | None = Header(default=None)):
+    user = current_user(x_telegram_init_data)
+    try:
+        date.fromisoformat(request_date)
+    except ValueError as exc:
+        raise HTTPException(400, "Некорректная дата") from exc
+    with connect() as db:
+        cursor = db.execute("INSERT INTO shift_swap_requests(requester_id, target_user_id, request_date, comment, created_at) VALUES (?, ?, ?, ?, ?)", (user["id"], target_user_id, request_date, comment, datetime.utcnow().isoformat()))
+        request_id = cursor.lastrowid
+    return {"ok": True, "id": request_id}
+
+
 @app.post("/api/shifts")
 async def create_shift(cash_amount: float = Form(0), card_amount: float = Form(0), comment: str = Form(""), photo_types: str = Form("[]"), photos: list[UploadFile] = File(default=[]), x_telegram_init_data: str | None = Header(default=None)):
     user = current_user(x_telegram_init_data)
+    required_photo_types = {"bar_station", "sink", "tea_surface", "coffee_station", "fridge_1", "fridge_2", "mini_fridge"}
+    submitted_photo_types = set(json.loads(photo_types))
+    if len(photos) != len(required_photo_types) or submitted_photo_types != required_photo_types:
+        raise HTTPException(400, "Нужно сделать все семь фотографий закрытия смены")
     now = datetime.utcnow().isoformat()
     saved_paths: list[tuple[str, str]] = []
     with connect() as db:
