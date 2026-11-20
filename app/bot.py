@@ -28,6 +28,7 @@ async def start(message: Message) -> None:
     if message.from_user.id in settings.admin_ids:
         upsert_user(message.from_user.id, message.from_user.full_name, "admin")
         await message.answer("Барная смена на связи. Откройте приложение:", reply_markup=mini_app_keyboard())
+        await send_pending_access_requests(message.bot, message.from_user.id)
     else:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Поделиться номером", request_contact=True)], [InlineKeyboardButton(text="Открыть анкету", web_app=WebAppInfo(url=settings.mini_app_url))]])
         await message.answer("Для первого входа подтвердите номер телефона, затем заполните анкету и выберите роль. Доступ появится после одобрения администратора.", reply_markup=keyboard)
@@ -52,16 +53,30 @@ async def admin(message: Message) -> None:
         await message.answer("Команда доступна только администратору.")
         return
     with connect() as db:
+        access_requests = db.execute("SELECT id, telegram_id, full_name, phone, role FROM users WHERE status = 'pending' AND phone != '' ORDER BY created_at").fetchall()
         requests = db.execute("SELECT r.id, r.request_date, u.full_name FROM day_off_requests r JOIN users u ON u.id = r.user_id WHERE r.status = 'pending' ORDER BY r.created_at").fetchall()
         users = db.execute("SELECT id, full_name FROM users WHERE is_active = 1 ORDER BY full_name").fetchall()
     if not requests:
         await message.answer("Ожидающих заявок на выходной нет.")
+    if not access_requests:
+        await message.answer("Ожидающих заявок на доступ нет.")
+    for request in access_requests:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"access:approved:{request['id']}"), InlineKeyboardButton(text="Отклонить", callback_data=f"access:rejected:{request['id']}")]])
+        await message.answer(f"Заявка на доступ\nФИО: {request['full_name']}\nТелефон: {request['phone']}\nРоль: {request['role']}", reply_markup=keyboard)
     for request in requests:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"dayoff:approved:{request['id']}"), InlineKeyboardButton(text="Отклонить", callback_data=f"dayoff:rejected:{request['id']}")]])
         await message.answer(f"Заявка на выходной\nБармен: {request['full_name']}\nДата: {request['request_date']}", reply_markup=keyboard)
     if users:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"График: {user['full_name']}", callback_data=f"schedule:{user['id']}")] for user in users])
         await message.answer("Выберите сотрудника, чтобы назначить смену на дату командой:\n/setshift USER_ID YYYY-MM-DD day|night|off", reply_markup=keyboard)
+
+
+async def send_pending_access_requests(bot: Bot, admin_id: int) -> None:
+    with connect() as db:
+        requests = db.execute("SELECT id, full_name, phone, role FROM users WHERE status = 'pending' AND phone != '' ORDER BY created_at").fetchall()
+    for request in requests:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"access:approved:{request['id']}"), InlineKeyboardButton(text="Отклонить", callback_data=f"access:rejected:{request['id']}")]])
+        await bot.send_message(admin_id, f"Заявка на доступ\nФИО: {request['full_name']}\nТелефон: {request['phone']}\nРоль: {request['role']}", reply_markup=keyboard)
 
 
 @router.callback_query(F.data.startswith("dayoff:"))

@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from datetime import date, datetime
 from pathlib import Path
@@ -74,15 +75,19 @@ async def onboarding(payload: dict = Body(...), x_telegram_init_data: str | None
     if not full_name or role not in {"waiter", "bartender", "admin"}:
         raise HTTPException(400, "Заполните ФИО и роль")
     user = create_pending_user(telegram_id, full_name, existing["phone"], role)
+    notification_sent = False
     if settings.bot_token:
         bot = Bot(settings.bot_token)
         try:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"access:approved:{user['id']}"), InlineKeyboardButton(text="Отклонить", callback_data=f"access:rejected:{user['id']}")]])
             for admin_id in settings.admin_ids:
                 await bot.send_message(admin_id, f"Новая заявка на доступ\nФИО: {full_name}\nТелефон: {existing['phone']}\nРоль: {role}", reply_markup=keyboard)
+            notification_sent = True
+        except Exception:
+            logging.exception("Не удалось уведомить администраторов о заявке пользователя %s", telegram_id)
         finally:
             await bot.session.close()
-    return row_dict(user)
+    return {**row_dict(user), "notification_sent": notification_sent}
 
 
 @app.get("/api/recipes")
