@@ -6,6 +6,7 @@ const $ = (selector) => document.querySelector(selector);
 let adminRecipes = [];
 let visibleRecipes = [];
 let adminUsers = [];
+let isAdmin = false;
 let calendarDate = new Date();
 let selectedCalendarDate = "";
 
@@ -24,7 +25,7 @@ async function loadMe() {
     if (!response.ok) throw new Error("auth");
     const user = await response.json();
     $("#greeting").textContent = `Привет, ${user.full_name.split(" ")[0]}`;
-    if (user.role === "admin") { document.querySelectorAll(".admin-only").forEach((element) => element.classList.add("visible")); loadAdmin(); }
+    if (user.role === "admin") { isAdmin = true; document.querySelectorAll(".admin-only").forEach((element) => element.classList.add("visible")); const addButton = $("#new-recipe"); if (addButton) $("#recipes .section-head").append(addButton); loadAdmin(); }
   } catch { $("#greeting").textContent = "Барная смена"; }
 }
 
@@ -39,9 +40,17 @@ async function loadRecipes(query = "") {
 function showRecipe(recipe) {
   const detail = $("#recipe-detail");
   detail.hidden = false;
-  detail.innerHTML = `<button class="secondary" id="close-recipe" type="button">← К списку</button>${recipe.photo_url ? `<img class="recipe-photo" src="${escapeHtml(recipe.photo_url)}" alt="${escapeHtml(recipe.title)}">` : ""}<p class="eyebrow">${escapeHtml(recipe.category)}</p><h2>${escapeHtml(recipe.title)}</h2><div class="detail-ingredients">${recipe.ingredients.map((item) => `<span class="ingredient">${escapeHtml(item)}</span>`).join("")}</div><p>${escapeHtml(recipe.recipe_text)}</p>${recipe.notes ? `<p class="muted">${escapeHtml(recipe.notes)}</p>` : ""}`;
+  detail.innerHTML = `<button class="secondary" id="close-recipe" type="button">← К списку</button>${recipe.photo_url ? `<img class="recipe-photo" src="${escapeHtml(recipe.photo_url)}" alt="${escapeHtml(recipe.title)}">` : ""}<p class="eyebrow">${escapeHtml(recipe.category)}</p><div class="detail-title-row"><h2>${escapeHtml(recipe.title)}</h2>${isAdmin ? `<button class="pencil" id="detail-edit-recipe" aria-label="Изменить техкарту">✎</button>` : ""}</div><div class="detail-ingredients">${recipe.ingredients.map((item) => `<span class="ingredient">${escapeHtml(item)}</span>`).join("")}</div><p>${escapeHtml(recipe.recipe_text)}</p>${recipe.notes ? `<p class="muted">${escapeHtml(recipe.notes)}</p>` : ""}`;
   $("#recipe-list").hidden = true;
   $("#close-recipe").addEventListener("click", () => { detail.hidden = true; $("#recipe-list").hidden = false; });
+  $("#detail-edit-recipe")?.addEventListener("click", () => renderRecipeEditor(recipe));
+}
+
+function renderRecipeEditor(recipe) {
+  const detail = $("#recipe-detail");
+  detail.innerHTML = `<button class="secondary" id="cancel-recipe-edit" type="button">← К техкарте</button><form id="recipe-edit-form" class="form recipe-editor"><input name="title" value="${escapeHtml(recipe.title)}" required><input name="category" value="${escapeHtml(recipe.category)}" required><textarea name="ingredients" required>${escapeHtml(recipe.ingredients.join("\n"))}</textarea><textarea name="recipe_text" required>${escapeHtml(recipe.recipe_text)}</textarea><textarea name="notes">${escapeHtml(recipe.notes || "")}</textarea><input name="photo_url" value="${escapeHtml(recipe.photo_url || "")}" placeholder="URL фотографии"><button class="primary" type="submit">Сохранить изменения</button></form>`;
+  $("#cancel-recipe-edit").addEventListener("click", () => showRecipe(recipe));
+  $("#recipe-edit-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await adminRequest(`/api/admin/recipes/${recipe.id}`, { method: "PUT", body: JSON.stringify({ title: form.get("title"), category: form.get("category"), ingredients: String(form.get("ingredients")).split("\n"), recipe_text: form.get("recipe_text"), notes: form.get("notes"), photo_url: form.get("photo_url") }) }); const updated = { ...recipe, title: form.get("title"), category: form.get("category"), ingredients: String(form.get("ingredients")).split("\n"), recipe_text: form.get("recipe_text"), notes: form.get("notes"), photo_url: form.get("photo_url") }; adminRecipes = adminRecipes.map((item) => item.id === recipe.id ? updated : item); visibleRecipes = visibleRecipes.map((item) => item.id === recipe.id ? updated : item); showRecipe(updated); loadAdmin(); } catch { notify("Не удалось сохранить техкарту."); } });
 }
 
 $("#recipe-search").addEventListener("input", (event) => loadRecipes(event.target.value));
@@ -78,7 +87,6 @@ async function adminRequest(url, options = {}) { const response = await fetch(ur
 async function loadAdmin() {
   try {
     const data = await adminRequest("/api/admin/overview"); adminRecipes = data.recipes; adminUsers = data.users.filter((user) => user.role !== "admin");
-    $("#admin-recipes").innerHTML = data.recipes.map((recipe) => `<div class="admin-row"><div><b>${escapeHtml(recipe.title)}</b><small>${escapeHtml(recipe.category)}</small></div><div class="row-actions"><button class="pencil" data-edit-recipe="${recipe.id}" aria-label="Изменить">✎</button><button class="mini-button danger" data-delete-recipe="${recipe.id}">Удалить</button></div></div>`).join("") || '<p class="muted">Техкарт нет.</p>';
     $("#admin-requests").innerHTML = data.requests.map((request) => `<div class="admin-row"><div><b>${escapeHtml(request.full_name)}</b><small>${escapeHtml(request.request_date)} · ${escapeHtml(request.status)}</small></div>${request.status === "pending" ? `<div class="row-actions"><button class="mini-button" data-request="${request.id}" data-status="approved">Одобрить</button><button class="mini-button danger" data-request="${request.id}" data-status="rejected">Отклонить</button></div>` : ""}</div>`).join("") || '<p class="muted">Заявок нет.</p>';
     $("#admin-swaps").innerHTML = data.swaps.map((swap) => `<div class="admin-row"><div><b>${escapeHtml(swap.requester_name)}</b><small>${escapeHtml(swap.request_date)}${swap.target_name ? ` · обмен с ${escapeHtml(swap.target_name)}` : ""} · ${escapeHtml(swap.status)}</small></div></div>`).join("") || '<p class="muted">Заявок на обмен пока нет.</p>';
     $("#admin-shifts").innerHTML = data.shifts.map((shift) => `<div class="admin-row"><div><b>${escapeHtml(shift.full_name)}</b><small>${escapeHtml(shift.report_date)} · ${escapeHtml(shift.status)}</small></div><select class="status-select" data-shift="${shift.id}"><option value="submitted" ${shift.status === "submitted" ? "selected" : ""}>Новый</option><option value="reviewed" ${shift.status === "reviewed" ? "selected" : ""}>Проверен</option><option value="needs_attention" ${shift.status === "needs_attention" ? "selected" : ""}>Есть замечания</option></select></div>`).join("") || '<p class="muted">Отчётов нет.</p>';
@@ -97,17 +105,16 @@ function renderCalendar(schedules = []) {
   for (let day = 1; day <= days; day += 1) { const key = `${monthKey()}-${String(day).padStart(2, "0")}`; html += `<button class="calendar-day ${byDate[key]?.length ? "has-shifts" : ""} ${selectedCalendarDate === key ? "selected" : ""}" data-calendar-date="${key}"><b>${day}</b><small>${byDate[key]?.length || 0} чел.</small></button>`; }
   $("#admin-calendar").innerHTML = html;
 }
-async function openCalendarDay(day) { selectedCalendarDate = day; renderCalendar(await adminRequest(`/api/admin/calendar?month=${monthKey()}`)); $("#calendar-editor").hidden = false; $("#calendar-selected-date").textContent = new Date(`${day}T00:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long" }); $("#calendar-user-list").innerHTML = adminUsers.map((user) => `<label class="user-check"><input type="checkbox" value="${user.id}"><span>${escapeHtml(user.full_name)}</span></label>`).join(""); }
+async function openCalendarDay(day) { selectedCalendarDate = day; const schedules = await adminRequest(`/api/admin/calendar?month=${monthKey()}`); renderCalendar(schedules); const assigned = new Set(schedules.filter((row) => row.work_date === day).map((row) => row.user_id)); $("#calendar-editor").hidden = false; $("#calendar-selected-date").textContent = new Date(`${day}T00:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long" }); $("#calendar-user-list").innerHTML = adminUsers.map((user) => `<label class="user-check"><input type="checkbox" value="${user.id}" ${assigned.has(user.id) ? "checked" : ""}><span>${escapeHtml(user.full_name)}</span></label>`).join(""); }
 
 $("#admin-calendar").addEventListener("click", (event) => { const day = event.target.closest("[data-calendar-date]"); if (day) openCalendarDay(day.dataset.calendarDate); });
 $("#calendar-prev").addEventListener("click", () => { calendarDate.setMonth(calendarDate.getMonth() - 1); loadAdmin(); });
 $("#calendar-next").addEventListener("click", () => { calendarDate.setMonth(calendarDate.getMonth() + 1); loadAdmin(); });
 $("#calendar-save").addEventListener("click", async () => { const user_ids = [...document.querySelectorAll("#calendar-user-list input:checked")].map((input) => Number(input.value)); try { await adminRequest("/api/admin/calendar/day", { method: "POST", body: JSON.stringify({ work_date: selectedCalendarDate, user_ids }) }); $("#admin-result").textContent = "График сохранён."; $("#calendar-editor").hidden = true; loadAdmin(); } catch { $("#admin-result").textContent = "Не удалось сохранить график."; } });
 
-async function editRecipe(id) { const recipe = adminRecipes.find((item) => item.id === id); if (!recipe) return; const title = window.prompt("Название техкарты", recipe.title); if (title === null) return; const ingredients = window.prompt("Ингредиенты, каждый с новой строки", recipe.ingredients.join("\n")); if (ingredients === null) return; const recipeText = window.prompt("Способ приготовления", recipe.recipe_text); if (recipeText === null) return; const notes = window.prompt("Заметки", recipe.notes || ""); if (notes === null) return; const photo_url = window.prompt("URL фотографии (необязательно)", recipe.photo_url || ""); if (photo_url === null) return; try { await adminRequest(`/api/admin/recipes/${id}`, { method: "PUT", body: JSON.stringify({ title, category: recipe.category, ingredients: ingredients.split("\n"), recipe_text: recipeText, notes, photo_url }) }); loadAdmin(); loadRecipes(); } catch { $("#admin-result").textContent = "Не удалось изменить техкарту."; } }
+async function editRecipe(id) { const recipe = adminRecipes.find((item) => item.id === id); if (!recipe) return; showRecipe(recipe); $("#recipe-list").hidden = true; $("#recipe-detail").hidden = false; renderRecipeEditor(recipe); }
 
 $("#admin-refresh").addEventListener("click", loadAdmin);
-$("#new-recipe").addEventListener("click", () => { const title = window.prompt("Название новой техкарты"); if (!title) return; const ingredients = window.prompt("Ингредиенты, каждый с новой строки", ""); const recipeText = window.prompt("Способ приготовления", ""); if (ingredients === null || recipeText === null) return; adminRequest("/api/admin/recipes", { method: "POST", body: JSON.stringify({ title, category: "Коктейль", ingredients: ingredients.split("\n"), recipe_text: recipeText, notes: "" }) }).then(() => { loadAdmin(); loadRecipes(); }); });
 document.addEventListener("click", async (event) => { const target = event.target.closest("button"); if (!target) return; if (target.dataset.request) { try { await adminRequest(`/api/admin/day-off/${target.dataset.request}`, { method: "PATCH", body: JSON.stringify({ status: target.dataset.status }) }); loadAdmin(); } catch { $("#admin-result").textContent = "Не удалось обработать заявку."; } } if (target.dataset.deleteRecipe) { try { await adminRequest(`/api/admin/recipes/${target.dataset.deleteRecipe}`, { method: "DELETE" }); loadAdmin(); loadRecipes(); } catch { $("#admin-result").textContent = "Не удалось удалить техкарту."; } } if (target.dataset.editRecipe) editRecipe(Number(target.dataset.editRecipe)); });
 document.addEventListener("change", async (event) => { const target = event.target; if (target.dataset.shift) { try { await adminRequest(`/api/admin/shifts/${target.dataset.shift}`, { method: "PATCH", body: JSON.stringify({ status: target.value }) }); } catch { $("#admin-result").textContent = "Не удалось обновить отчёт."; } } });
 
