@@ -114,7 +114,7 @@ $("#calendar-save").addEventListener("click", async () => { const user_ids = [..
 
 async function editRecipe(id) { const recipe = adminRecipes.find((item) => item.id === id); if (!recipe) return; showRecipe(recipe); $("#recipe-list").hidden = true; $("#recipe-detail").hidden = false; renderRecipeEditor(recipe); }
 
-$("#admin-refresh").addEventListener("click", loadAdmin);
+$("#admin-refresh")?.addEventListener("click", loadAdmin);
 document.addEventListener("click", async (event) => { const target = event.target.closest("button"); if (!target) return; if (target.dataset.request) { try { await adminRequest(`/api/admin/day-off/${target.dataset.request}`, { method: "PATCH", body: JSON.stringify({ status: target.dataset.status }) }); loadAdmin(); } catch { $("#admin-result").textContent = "Не удалось обработать заявку."; } } if (target.dataset.deleteRecipe) { try { await adminRequest(`/api/admin/recipes/${target.dataset.deleteRecipe}`, { method: "DELETE" }); loadAdmin(); loadRecipes(); } catch { $("#admin-result").textContent = "Не удалось удалить техкарту."; } } if (target.dataset.editRecipe) editRecipe(Number(target.dataset.editRecipe)); });
 document.addEventListener("change", async (event) => { const target = event.target; if (target.dataset.shift) { try { await adminRequest(`/api/admin/shifts/${target.dataset.shift}`, { method: "PATCH", body: JSON.stringify({ status: target.value }) }); } catch { $("#admin-result").textContent = "Не удалось обновить отчёт."; } } });
 
