@@ -76,7 +76,7 @@ async def onboarding(payload: dict = Body(...), x_telegram_init_data: str | None
         raise HTTPException(400, "Заполните ФИО и роль")
     user = create_pending_user(telegram_id, full_name, existing["phone"], role)
     notification_sent = False
-    if settings.bot_token:
+    if settings.bot_token and settings.admin_ids:
         bot = Bot(settings.bot_token)
         try:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"access:approved:{user['id']}"), InlineKeyboardButton(text="Отклонить", callback_data=f"access:rejected:{user['id']}")]])
@@ -85,8 +85,10 @@ async def onboarding(payload: dict = Body(...), x_telegram_init_data: str | None
             notification_sent = True
         except Exception:
             logging.exception("Не удалось уведомить администраторов о заявке пользователя %s", telegram_id)
-        finally:
+        try:
             await bot.session.close()
+        except Exception:
+            logging.exception("Не удалось закрыть сессию Telegram после заявки пользователя %s", telegram_id)
     return {**row_dict(user), "notification_sent": notification_sent}
 
 

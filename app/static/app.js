@@ -34,8 +34,9 @@ $("#onboarding-form")?.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = new FormData(event.currentTarget);
   const response = await fetch("/api/onboarding", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(form)) });
-  const result = response.ok ? await response.json() : null;
-  $("#onboarding-result").textContent = response.ok ? (result.notification_sent ? "Заявка отправлена. Дождитесь подтверждения администратора." : "Заявка сохранена, но уведомление администратору не доставлено. Администратор увидит её после команды /admin.") : "Не удалось отправить анкету.";
+  let result = null;
+  try { result = await response.json(); } catch { result = {}; }
+  $("#onboarding-result").textContent = response.ok ? (result.notification_sent ? "Заявка отправлена. Дождитесь подтверждения администратора." : "Заявка сохранена, но уведомление администратору не доставлено. Администратор увидит её после команды /admin.") : (result.detail || "Не удалось отправить анкету.");
   if (response.ok) event.currentTarget.querySelector("button").disabled = true;
 });
 
