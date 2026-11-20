@@ -87,8 +87,23 @@ document.querySelectorAll('#shift-form input[type="file"]').forEach((input) => i
 
 async function loadSchedule() {
   const response = await fetch("/api/schedule", { headers }); if (!response.ok) return;
-  const rows = await response.json(); $("#schedule-list").innerHTML = rows.map((row) => `<div class="schedule-item"><span>${new Date(`${row.work_date}T00:00:00`).toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "long" })}</span><b>${row.shift_type === "off" ? "Выходной" : "Рабочая смена"}</b></div>`).join("") || '<p class="muted">Расписание пока не опубликовано.</p>';
+  const rows = await response.json();
+  const month = new Date();
+  const calendarResponse = await fetch(`/api/calendar?month=${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`, { headers });
+  const calendarRows = calendarResponse.ok ? await calendarResponse.json() : [];
+  renderStaffCalendar(calendarRows, rows);
   const staffResponse = await fetch("/api/staff", { headers }); if (staffResponse.ok) { const staff = await staffResponse.json(); $("#swap-user").innerHTML = '<option value="">Выберите сотрудника</option>' + staff.map((user) => `<option value="${user.id}">${escapeHtml(user.full_name)}</option>`).join(""); }
+}
+
+function renderStaffCalendar(rows, ownRows) {
+  const month = new Date(); const year = month.getFullYear(); const monthIndex = month.getMonth(); const first = new Date(year, monthIndex, 1); const days = new Date(year, monthIndex + 1, 0).getDate(); const ownDates = new Set(ownRows.map((row) => row.work_date));
+  const byDate = rows.reduce((map, row) => ((map[row.work_date] ||= []).push(row), map), {});
+  let html = `<div class="staff-calendar-head"><b>${month.toLocaleDateString("ru-RU", { month: "long", year: "numeric" })}</b></div><div class="staff-calendar-grid">${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((day) => `<span class="calendar-weekday">${day}</span>`).join("")}`;
+  const offset = (first.getDay() + 6) % 7; for (let i = 0; i < offset; i += 1) html += '<span class="calendar-empty"></span>';
+  for (let day = 1; day <= days; day += 1) { const key = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`; html += `<button class="calendar-day ${ownDates.has(key) ? "my-shift" : ""}" data-staff-date="${key}"><b>${day}</b><small>${byDate[key]?.length || 0} чел.</small></button>`; }
+  html += "</div><p id=\"staff-calendar-detail\" class=\"result\"></p>";
+  $("#schedule-list").innerHTML = html;
+  document.querySelectorAll("[data-staff-date]").forEach((button) => button.addEventListener("click", () => { const people = byDate[button.dataset.staffDate] || []; $("#staff-calendar-detail").textContent = people.length ? `${button.dataset.staffDate}: ${people.map((person) => person.full_name).join(", ")}` : `${button.dataset.staffDate}: смена не назначена`; }));
 }
 
 async function loadStaff() {
@@ -102,27 +117,15 @@ async function loadStaff() {
   ];
   $("#staff-groups").innerHTML = groups.map(([role, label]) => {
     const members = staff.filter((user) => user.role === role);
-    return `<section class="staff-group"><h3>${label}<span>${members.length}</span></h3><div class="staff-list">${members.map((user) => `<button class="staff-card" data-staff-id="${user.id}"><span class="staff-avatar">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><span><b>${escapeHtml(user.full_name)}</b><small>${label.slice(0, -1)}</small></span><span class="staff-arrow">›</span></button>`).join("") || '<p class="muted">Пока нет сотрудников.</p>'}</div></section>`;
+    return `<section class="staff-group"><h3>${label}<span>${members.length}</span></h3><div class="staff-list">${members.map((user) => `<div class="staff-card"><span class="staff-avatar">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><span><b>${escapeHtml(user.full_name)}</b><small>${label.slice(0, -1)}</small></span><a class="staff-telegram" href="tg://user?id=${encodeURIComponent(user.telegram_id)}" aria-label="Открыть личный чат">➤</a></div>`).join("") || '<p class="muted">Пока нет сотрудников.</p>'}</div></section>`;
   }).join("");
   window.staffDirectory = staff;
 }
 
-function showStaffMember(user) {
-  const roleLabels = { admin: "Администратор", waiter: "Официант", bartender: "Бармен" };
-  $("#staff-groups").hidden = true;
-  const detail = $("#staff-detail");
-  detail.hidden = false;
-  detail.innerHTML = `<button class="secondary" id="close-staff" type="button">← К списку</button><div class="staff-profile"><span class="staff-avatar large">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><h2>${escapeHtml(user.full_name)}</h2><p class="muted">${roleLabels[user.role] || "Сотрудник"}</p><a class="primary staff-chat" href="tg://user?id=${encodeURIComponent(user.telegram_id)}">Открыть личный чат</a></div>`;
-  $("#close-staff").addEventListener("click", () => { detail.hidden = true; $("#staff-groups").hidden = false; });
-}
-
-$("#staff-groups").addEventListener("click", (event) => {
-  const card = event.target.closest("[data-staff-id]");
-  if (card) showStaffMember((window.staffDirectory || []).find((user) => user.id === Number(card.dataset.staffId)));
-});
 $("#staff-refresh")?.addEventListener("click", loadStaff);
 $("#day-off-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/day-off", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#day-off-result").textContent = response.ok ? "Заявка отправлена администратору." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
 $("#swap-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/shift-swap", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#swap-result").textContent = response.ok ? "Заявка на обмен отправлена." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
+document.querySelectorAll('#schedule input[type="date"]').forEach((input) => { input.setAttribute("aria-label", "Выберите дату"); input.title = "Выберите дату"; const hint = document.createElement("span"); hint.className = "date-hint"; hint.textContent = "Выберите дату"; input.parentElement?.insertBefore(hint, input); });
 
 async function adminRequest(url, options = {}) { const response = await fetch(url, { ...options, headers: { ...headers, "Content-Type": "application/json", ...(options.headers || {}) } }); if (!response.ok) throw new Error(await response.text()); return response.json(); }
 

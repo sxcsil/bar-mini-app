@@ -111,6 +111,19 @@ def schedule(x_telegram_init_data: str | None = Header(default=None)):
     return [row_dict(row) for row in rows]
 
 
+@app.get("/api/calendar")
+def public_calendar(month: str = "", x_telegram_init_data: str | None = Header(default=None)):
+    approved_user(x_telegram_init_data)
+    month = month or date.today().strftime("%Y-%m")
+    try:
+        datetime.strptime(month, "%Y-%m")
+    except ValueError as exc:
+        raise HTTPException(400, "Месяц должен быть в формате YYYY-MM") from exc
+    with connect() as db:
+        rows = db.execute("SELECT s.work_date, s.user_id, u.full_name FROM schedules s JOIN users u ON u.id = s.user_id WHERE substr(s.work_date, 1, 7) = ? AND u.is_active = 1 AND u.status = 'approved' ORDER BY s.work_date, u.full_name", (month,)).fetchall()
+    return [row_dict(row) for row in rows]
+
+
 @app.get("/api/staff")
 def staff(x_telegram_init_data: str | None = Header(default=None)):
     approved_user(x_telegram_init_data)
