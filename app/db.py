@@ -24,6 +24,8 @@ def init_db() -> None:
                 full_name TEXT NOT NULL,
                 role TEXT NOT NULL DEFAULT 'bartender',
                 is_active INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'approved',
+                phone TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS recipes (
@@ -85,6 +87,11 @@ def init_db() -> None:
             );
             """
         )
+        columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+        if "status" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'")
+        if "phone" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
         if db.execute("SELECT COUNT(*) FROM recipes").fetchone()[0] == 0:
             now = datetime.utcnow().isoformat()
             demo = [
@@ -99,11 +106,21 @@ def upsert_user(telegram_id: int, full_name: str, role: str | None = None) -> sq
         existing = db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
         if existing:
             if role:
-                db.execute("UPDATE users SET full_name = ?, role = ? WHERE telegram_id = ?", (full_name, role, telegram_id))
+                db.execute("UPDATE users SET full_name = ?, role = ?, status = 'approved', is_active = 1 WHERE telegram_id = ?", (full_name, role, telegram_id))
             else:
                 db.execute("UPDATE users SET full_name = ? WHERE telegram_id = ?", (full_name, telegram_id))
         else:
             db.execute("INSERT INTO users(telegram_id, full_name, role, created_at) VALUES (?, ?, ?, ?)", (telegram_id, full_name, role or "bartender", datetime.utcnow().isoformat()))
+        return db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
+
+
+def create_pending_user(telegram_id: int, full_name: str, phone: str, role: str) -> sqlite3.Row:
+    with connect() as db:
+        db.execute(
+            "INSERT INTO users(telegram_id, full_name, phone, role, status, is_active, created_at) VALUES (?, ?, ?, ?, 'pending', 1, ?) "
+            "ON CONFLICT(telegram_id) DO UPDATE SET full_name=excluded.full_name, phone=excluded.phone, role=excluded.role, status='pending', is_active=1",
+            (telegram_id, full_name, phone, role, datetime.utcnow().isoformat()),
+        )
         return db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
 
 

@@ -10,7 +10,7 @@ from aiogram import Bot
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from .config import settings
-from .db import connect, init_db, row_dict, upsert_user
+from .db import connect, create_pending_user, init_db, row_dict, upsert_user, user_by_telegram_id
 from .security import validate_init_data
 
 app = FastAPI(title="Bar Mini App API")
@@ -34,12 +34,24 @@ def current_user(init_data: str | None):
     except ValueError as exc:
         raise HTTPException(401, str(exc)) from exc
     telegram_id = int(user.get("id", 0))
-    role = "admin" if telegram_id in settings.admin_ids else "bartender"
-    return upsert_user(telegram_id, " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or "Бармен", role)
+    full_name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or "Новый пользователь"
+    if telegram_id in settings.admin_ids:
+        return upsert_user(telegram_id, full_name, "admin")
+    existing = user_by_telegram_id(telegram_id)
+    if not existing:
+        raise HTTPException(403, "Сначала заполните анкету в чате с ботом командой /start")
+    return existing
+
+
+def approved_user(init_data: str | None):
+    user = current_user(init_data)
+    if user["status"] != "approved":
+        raise HTTPException(403, "Доступ откроется после одобрения администратора")
+    return user
 
 
 def admin_user(init_data: str | None):
-    user = current_user(init_data)
+    user = approved_user(init_data)
     if user["role"] != "admin":
         raise HTTPException(403, "Доступ только для администратора")
     return user
@@ -50,9 +62,34 @@ def me(x_telegram_init_data: str | None = Header(default=None)):
     return row_dict(current_user(x_telegram_init_data))
 
 
+@app.post("/api/onboarding")
+async def onboarding(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    telegram_user = validate_init_data(x_telegram_init_data or "")
+    telegram_id = int(telegram_user.get("id", 0))
+    if telegram_id in settings.admin_ids:
+        return row_dict(upsert_user(telegram_id, payload.get("full_name", "Администратор"), "admin"))
+    existing = user_by_telegram_id(telegram_id)
+    if not existing or not existing["phone"]:
+        raise HTTPException(400, "Сначала подтвердите номер телефона через Telegram")
+    full_name = str(payload.get("full_name", "")).strip()
+    role = payload.get("role")
+    if not full_name or role not in {"waiter", "bartender", "admin"}:
+        raise HTTPException(400, "Заполните ФИО и роль")
+    user = create_pending_user(telegram_id, full_name, existing["phone"], role)
+    if settings.bot_token:
+        bot = Bot(settings.bot_token)
+        try:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"access:approved:{user['id']}"), InlineKeyboardButton(text="Отклонить", callback_data=f"access:rejected:{user['id']}")]])
+            for admin_id in settings.admin_ids:
+                await bot.send_message(admin_id, f"Новая заявка на доступ\nФИО: {full_name}\nТелефон: {existing['phone']}\nРоль: {role}", reply_markup=keyboard)
+        finally:
+            await bot.session.close()
+    return row_dict(user)
+
+
 @app.get("/api/recipes")
 def recipes(q: str = "", x_telegram_init_data: str | None = Header(default=None)):
-    current_user(x_telegram_init_data)
+    approved_user(x_telegram_init_data)
     with connect() as db:
         rows = db.execute("SELECT * FROM recipes WHERE is_active = 1 AND (title LIKE ? OR ingredients LIKE ?) ORDER BY sort_order, title", (f"%{q}%", f"%{q}%")).fetchall()
     result = []
@@ -65,7 +102,7 @@ def recipes(q: str = "", x_telegram_init_data: str | None = Header(default=None)
 
 @app.get("/api/schedule")
 def schedule(x_telegram_init_data: str | None = Header(default=None)):
-    user = current_user(x_telegram_init_data)
+    user = approved_user(x_telegram_init_data)
     with connect() as db:
         rows = db.execute("SELECT * FROM schedules WHERE user_id = ? AND work_date >= date('now', '-7 day') ORDER BY work_date", (user["id"],)).fetchall()
     return [row_dict(row) for row in rows]
@@ -73,9 +110,9 @@ def schedule(x_telegram_init_data: str | None = Header(default=None)):
 
 @app.get("/api/staff")
 def staff(x_telegram_init_data: str | None = Header(default=None)):
-    current_user(x_telegram_init_data)
+    approved_user(x_telegram_init_data)
     with connect() as db:
-        rows = db.execute("SELECT id, full_name FROM users WHERE is_active = 1 AND role = 'bartender' ORDER BY full_name").fetchall()
+        rows = db.execute("SELECT id, telegram_id, full_name, role, created_at FROM users WHERE is_active = 1 AND status = 'approved' ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'waiter' THEN 2 WHEN 'bartender' THEN 3 ELSE 4 END, full_name").fetchall()
     return [row_dict(row) for row in rows]
 
 
@@ -84,7 +121,7 @@ def admin_overview(x_telegram_init_data: str | None = Header(default=None)):
     admin_user(x_telegram_init_data)
     with connect() as db:
         recipes = db.execute("SELECT * FROM recipes WHERE is_active = 1 ORDER BY sort_order, title").fetchall()
-        users = db.execute("SELECT id, telegram_id, full_name, role, is_active FROM users ORDER BY full_name").fetchall()
+        users = db.execute("SELECT id, telegram_id, full_name, role, is_active, created_at FROM users ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'waiter' THEN 2 WHEN 'bartender' THEN 3 ELSE 4 END, full_name").fetchall()
         requests = db.execute("SELECT r.*, u.full_name FROM day_off_requests r JOIN users u ON u.id = r.user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
         swaps = db.execute("SELECT r.*, u.full_name AS requester_name, t.full_name AS target_name FROM shift_swap_requests r JOIN users u ON u.id = r.requester_id LEFT JOIN users t ON t.id = r.target_user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
         shifts = db.execute("SELECT s.*, u.full_name FROM shifts s JOIN users u ON u.id = s.user_id ORDER BY s.created_at DESC LIMIT 50").fetchall()
@@ -95,6 +132,22 @@ def admin_overview(x_telegram_init_data: str | None = Header(default=None)):
         item["ingredients"] = json.loads(item["ingredients"])
         recipe_items.append(item)
     return {"recipes": recipe_items, "users": [row_dict(row) for row in users], "requests": [row_dict(row) for row in requests], "swaps": [row_dict(row) for row in swaps], "shifts": [row_dict(row) for row in shifts], "schedules": [row_dict(row) for row in schedules]}
+
+
+@app.patch("/api/admin/users/{user_id}/role")
+def change_user_role(user_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data)
+    role = payload.get("role")
+    if role not in {"admin", "waiter", "bartender"}:
+        raise HTTPException(400, "Недопустимая роль")
+    with connect() as db:
+        target = db.execute("SELECT telegram_id FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not target:
+            raise HTTPException(404, "Сотрудник не найден")
+        if target["telegram_id"] in settings.admin_ids and role != "admin":
+            raise HTTPException(400, "Основного администратора нельзя понизить через приложение")
+        db.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+    return {"ok": True}
 
 
 @app.get("/api/admin/calendar")
@@ -211,7 +264,7 @@ def review_shift(shift_id: int, payload: dict = Body(...), x_telegram_init_data:
 
 @app.post("/api/day-off")
 async def day_off(request_date: str = Form(...), x_telegram_init_data: str | None = Header(default=None)):
-    user = current_user(x_telegram_init_data)
+    user = approved_user(x_telegram_init_data)
     with connect() as db:
         cursor = db.execute("INSERT INTO day_off_requests(user_id, request_date, created_at) VALUES (?, ?, ?)", (user["id"], request_date, datetime.utcnow().isoformat()))
         request_id = cursor.lastrowid
@@ -228,7 +281,7 @@ async def day_off(request_date: str = Form(...), x_telegram_init_data: str | Non
 
 @app.post("/api/shift-swap")
 async def shift_swap(request_date: str = Form(...), target_user_id: int | None = Form(default=None), comment: str = Form(""), x_telegram_init_data: str | None = Header(default=None)):
-    user = current_user(x_telegram_init_data)
+    user = approved_user(x_telegram_init_data)
     try:
         date.fromisoformat(request_date)
     except ValueError as exc:
@@ -241,7 +294,7 @@ async def shift_swap(request_date: str = Form(...), target_user_id: int | None =
 
 @app.post("/api/shifts")
 async def create_shift(cash_amount: float = Form(0), card_amount: float = Form(0), comment: str = Form(""), photo_types: str = Form("[]"), photos: list[UploadFile] = File(default=[]), x_telegram_init_data: str | None = Header(default=None)):
-    user = current_user(x_telegram_init_data)
+    user = approved_user(x_telegram_init_data)
     required_photo_types = {"bar_station", "sink", "tea_surface", "coffee_station", "fridge_1", "fridge_2", "mini_fridge"}
     submitted_photo_types = set(json.loads(photo_types))
     if len(photos) != len(required_photo_types) or submitted_photo_types != required_photo_types:

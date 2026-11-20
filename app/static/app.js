@@ -25,9 +25,18 @@ async function loadMe() {
     if (!response.ok) throw new Error("auth");
     const user = await response.json();
     $("#greeting").textContent = `Привет, ${user.full_name.split(" ")[0]}`;
+    if (user.status !== "approved") { $("#onboarding").hidden = false; $("#home-content").hidden = true; document.querySelectorAll(".tab:not([data-page='home'])").forEach((tab) => tab.hidden = true); $("#onboarding-result").textContent = user.status === "pending" ? "Заявка уже отправлена. Дождитесь подтверждения администратора." : "Заполните анкету для доступа."; }
     if (user.role === "admin") { isAdmin = true; document.querySelectorAll(".admin-only").forEach((element) => element.classList.add("visible")); const addButton = $("#new-recipe"); if (addButton) $("#recipes .section-head").append(addButton); loadAdmin(); }
   } catch { $("#greeting").textContent = "Барная смена"; }
 }
+
+$("#onboarding-form")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const response = await fetch("/api/onboarding", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(form)) });
+  $("#onboarding-result").textContent = response.ok ? "Заявка отправлена. Дождитесь подтверждения администратора." : "Не удалось отправить анкету.";
+  if (response.ok) event.currentTarget.querySelector("button").disabled = true;
+});
 
 async function loadRecipes(query = "") {
   const response = await fetch(`/api/recipes?q=${encodeURIComponent(query)}`, { headers });
@@ -79,6 +88,37 @@ async function loadSchedule() {
   const rows = await response.json(); $("#schedule-list").innerHTML = rows.map((row) => `<div class="schedule-item"><span>${new Date(`${row.work_date}T00:00:00`).toLocaleDateString("ru-RU", { weekday: "short", day: "numeric", month: "long" })}</span><b>${row.shift_type === "off" ? "Выходной" : "Рабочая смена"}</b></div>`).join("") || '<p class="muted">Расписание пока не опубликовано.</p>';
   const staffResponse = await fetch("/api/staff", { headers }); if (staffResponse.ok) { const staff = await staffResponse.json(); $("#swap-user").innerHTML = '<option value="">Выберите сотрудника</option>' + staff.map((user) => `<option value="${user.id}">${escapeHtml(user.full_name)}</option>`).join(""); }
 }
+
+async function loadStaff() {
+  const response = await fetch("/api/staff", { headers });
+  if (!response.ok) return;
+  const staff = await response.json();
+  const groups = [
+    ["admin", "Администраторы"],
+    ["waiter", "Официанты"],
+    ["bartender", "Бармены"],
+  ];
+  $("#staff-groups").innerHTML = groups.map(([role, label]) => {
+    const members = staff.filter((user) => user.role === role);
+    return `<section class="staff-group"><h3>${label}<span>${members.length}</span></h3><div class="staff-list">${members.map((user) => `<button class="staff-card" data-staff-id="${user.id}"><span class="staff-avatar">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><span><b>${escapeHtml(user.full_name)}</b><small>${label.slice(0, -1)}</small></span><span class="staff-arrow">›</span></button>`).join("") || '<p class="muted">Пока нет сотрудников.</p>'}</div></section>`;
+  }).join("");
+  window.staffDirectory = staff;
+}
+
+function showStaffMember(user) {
+  const roleLabels = { admin: "Администратор", waiter: "Официант", bartender: "Бармен" };
+  $("#staff-groups").hidden = true;
+  const detail = $("#staff-detail");
+  detail.hidden = false;
+  detail.innerHTML = `<button class="secondary" id="close-staff" type="button">← К списку</button><div class="staff-profile"><span class="staff-avatar large">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><h2>${escapeHtml(user.full_name)}</h2><p class="muted">${roleLabels[user.role] || "Сотрудник"}</p><a class="primary staff-chat" href="tg://user?id=${encodeURIComponent(user.telegram_id)}">Открыть личный чат</a></div>`;
+  $("#close-staff").addEventListener("click", () => { detail.hidden = true; $("#staff-groups").hidden = false; });
+}
+
+$("#staff-groups").addEventListener("click", (event) => {
+  const card = event.target.closest("[data-staff-id]");
+  if (card) showStaffMember((window.staffDirectory || []).find((user) => user.id === Number(card.dataset.staffId)));
+});
+$("#staff-refresh")?.addEventListener("click", loadStaff);
 $("#day-off-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/day-off", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#day-off-result").textContent = response.ok ? "Заявка отправлена администратору." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
 $("#swap-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/shift-swap", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#swap-result").textContent = response.ok ? "Заявка на обмен отправлена." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
 
@@ -86,7 +126,8 @@ async function adminRequest(url, options = {}) { const response = await fetch(ur
 
 async function loadAdmin() {
   try {
-    const data = await adminRequest("/api/admin/overview"); adminRecipes = data.recipes; adminUsers = data.users.filter((user) => user.role !== "admin");
+    const data = await adminRequest("/api/admin/overview"); window.adminDirectory = data.users; adminRecipes = data.recipes; adminUsers = data.users.filter((user) => user.role !== "admin");
+    const staffPanel = $("#admin-staff"); if (staffPanel) staffPanel.innerHTML = data.users.map((user) => `<button class="staff-card" data-admin-staff-id="${user.id}"><span class="staff-avatar">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><span><b>${escapeHtml(user.full_name)}</b><small>${escapeHtml({ admin: "Администратор", waiter: "Официант", bartender: "Бармен" }[user.role] || user.role)}</small></span><span class="staff-arrow">›</span></button>`).join("");
     $("#admin-requests").innerHTML = data.requests.map((request) => `<div class="admin-row"><div><b>${escapeHtml(request.full_name)}</b><small>${escapeHtml(request.request_date)} · ${escapeHtml(request.status)}</small></div>${request.status === "pending" ? `<div class="row-actions"><button class="mini-button" data-request="${request.id}" data-status="approved">Одобрить</button><button class="mini-button danger" data-request="${request.id}" data-status="rejected">Отклонить</button></div>` : ""}</div>`).join("") || '<p class="muted">Заявок нет.</p>';
     $("#admin-swaps").innerHTML = data.swaps.map((swap) => `<div class="admin-row"><div><b>${escapeHtml(swap.requester_name)}</b><small>${escapeHtml(swap.request_date)}${swap.target_name ? ` · обмен с ${escapeHtml(swap.target_name)}` : ""} · ${escapeHtml(swap.status)}</small></div></div>`).join("") || '<p class="muted">Заявок на обмен пока нет.</p>';
     $("#admin-shifts").innerHTML = data.shifts.map((shift) => `<div class="admin-row"><div><b>${escapeHtml(shift.full_name)}</b><small>${escapeHtml(shift.report_date)} · ${escapeHtml(shift.status)}</small></div><select class="status-select" data-shift="${shift.id}"><option value="submitted" ${shift.status === "submitted" ? "selected" : ""}>Новый</option><option value="reviewed" ${shift.status === "reviewed" ? "selected" : ""}>Проверен</option><option value="needs_attention" ${shift.status === "needs_attention" ? "selected" : ""}>Есть замечания</option></select></div>`).join("") || '<p class="muted">Отчётов нет.</p>';
@@ -116,6 +157,7 @@ async function editRecipe(id) { const recipe = adminRecipes.find((item) => item.
 
 $("#admin-refresh")?.addEventListener("click", loadAdmin);
 document.addEventListener("click", async (event) => { const target = event.target.closest("button"); if (!target) return; if (target.dataset.request) { try { await adminRequest(`/api/admin/day-off/${target.dataset.request}`, { method: "PATCH", body: JSON.stringify({ status: target.dataset.status }) }); loadAdmin(); } catch { $("#admin-result").textContent = "Не удалось обработать заявку."; } } if (target.dataset.deleteRecipe) { try { await adminRequest(`/api/admin/recipes/${target.dataset.deleteRecipe}`, { method: "DELETE" }); loadAdmin(); loadRecipes(); } catch { $("#admin-result").textContent = "Не удалось удалить техкарту."; } } if (target.dataset.editRecipe) editRecipe(Number(target.dataset.editRecipe)); });
+document.addEventListener("click", async (event) => { const target = event.target.closest("[data-admin-staff-id]"); if (!target) return; const user = (window.adminDirectory || []).find((item) => item.id === Number(target.dataset.adminStaffId)); if (!user) return; const role = window.prompt("Роль: admin, waiter или bartender", user.role); if (!role || !["admin", "waiter", "bartender"].includes(role)) return; try { await adminRequest(`/api/admin/users/${user.id}/role`, { method: "PATCH", body: JSON.stringify({ role }) }); loadAdmin(); loadStaff(); } catch { $("#admin-result").textContent = "Не удалось изменить роль."; } });
 document.addEventListener("change", async (event) => { const target = event.target; if (target.dataset.shift) { try { await adminRequest(`/api/admin/shifts/${target.dataset.shift}`, { method: "PATCH", body: JSON.stringify({ status: target.value }) }); } catch { $("#admin-result").textContent = "Не удалось обновить отчёт."; } } });
 
-loadMe(); loadRecipes(); loadSchedule();
+loadMe(); loadRecipes(); loadSchedule(); loadStaff();

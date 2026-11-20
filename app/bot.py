@@ -8,9 +8,15 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
 from .config import settings
-from .db import connect, init_db, upsert_user
+from .db import connect, create_pending_user, init_db, upsert_user
 
 router = Router()
+
+
+@router.message(F.contact)
+async def receive_contact(message: Message) -> None:
+    create_pending_user(message.from_user.id, message.from_user.full_name, message.contact.phone_number, "bartender")
+    await message.answer("Контакт получен. Откройте приложение, заполните имя и роль, затем отправьте заявку.", reply_markup=mini_app_keyboard())
 
 
 def mini_app_keyboard() -> InlineKeyboardMarkup:
@@ -19,8 +25,12 @@ def mini_app_keyboard() -> InlineKeyboardMarkup:
 
 @router.message(CommandStart())
 async def start(message: Message) -> None:
-    upsert_user(message.from_user.id, message.from_user.full_name, "admin" if message.from_user.id in settings.admin_ids else "bartender")
-    await message.answer("Барная смена на связи. Откройте приложение:", reply_markup=mini_app_keyboard())
+    if message.from_user.id in settings.admin_ids:
+        upsert_user(message.from_user.id, message.from_user.full_name, "admin")
+        await message.answer("Барная смена на связи. Откройте приложение:", reply_markup=mini_app_keyboard())
+    else:
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Поделиться номером", request_contact=True)], [InlineKeyboardButton(text="Открыть анкету", web_app=WebAppInfo(url=settings.mini_app_url))]])
+        await message.answer("Для первого входа подтвердите номер телефона, затем заполните анкету и выберите роль. Доступ появится после одобрения администратора.", reply_markup=keyboard)
 
 
 @router.message(Command("help"))
@@ -70,6 +80,24 @@ async def process_day_off(callback: CallbackQuery) -> None:
     await callback.message.edit_text(f"Заявка на {request['request_date']} {label}.")
     if settings.bot_token:
         await callback.bot.send_message(request["telegram_id"], f"Заявка на выходной {request['request_date']} {label} администратором.")
+    await callback.answer("Готово")
+
+
+@router.callback_query(F.data.startswith("access:"))
+async def process_access(callback: CallbackQuery) -> None:
+    if callback.from_user.id not in settings.admin_ids:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    _, status, user_id = callback.data.split(":")
+    with connect() as db:
+        user = db.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
+        if not user:
+            await callback.answer("Заявка не найдена", show_alert=True)
+            return
+        approved = status == "approved"
+        db.execute("UPDATE users SET status = ?, is_active = ? WHERE id = ?", ("approved" if approved else "rejected", 1 if approved else 0, int(user_id)))
+    await callback.message.edit_text(f"Доступ для {user['full_name']} {'одобрен' if status == 'approved' else 'отклонён'}.")
+    await callback.bot.send_message(user["telegram_id"], "Доступ одобрен. Теперь откройте бота и Mini App." if status == "approved" else "Заявка на доступ отклонена.")
     await callback.answer("Готово")
 
 
