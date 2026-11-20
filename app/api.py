@@ -38,9 +38,7 @@ def current_user(init_data: str | None):
     if telegram_id in settings.admin_ids:
         return upsert_user(telegram_id, full_name, "admin")
     existing = user_by_telegram_id(telegram_id)
-    if not existing:
-        raise HTTPException(403, "Сначала заполните анкету в чате с ботом командой /start")
-    return existing
+    return existing or create_pending_user(telegram_id, full_name, "", "bartender")
 
 
 def approved_user(init_data: str | None):
@@ -89,7 +87,7 @@ async def onboarding(payload: dict = Body(...), x_telegram_init_data: str | None
 
 @app.get("/api/recipes")
 def recipes(q: str = "", x_telegram_init_data: str | None = Header(default=None)):
-    approved_user(x_telegram_init_data)
+    current_user(x_telegram_init_data)
     with connect() as db:
         rows = db.execute("SELECT * FROM recipes WHERE is_active = 1 AND (title LIKE ? OR ingredients LIKE ?) ORDER BY sort_order, title", (f"%{q}%", f"%{q}%")).fetchall()
     result = []
@@ -138,7 +136,7 @@ def admin_overview(x_telegram_init_data: str | None = Header(default=None)):
 def change_user_role(user_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
     admin_user(x_telegram_init_data)
     role = payload.get("role")
-    if role not in {"admin", "waiter", "bartender"}:
+    if role not in {None, "admin", "waiter", "bartender"}:
         raise HTTPException(400, "Недопустимая роль")
     with connect() as db:
         target = db.execute("SELECT telegram_id FROM users WHERE id = ?", (user_id,)).fetchone()
@@ -146,7 +144,10 @@ def change_user_role(user_id: int, payload: dict = Body(...), x_telegram_init_da
             raise HTTPException(404, "Сотрудник не найден")
         if target["telegram_id"] in settings.admin_ids and role != "admin":
             raise HTTPException(400, "Основного администратора нельзя понизить через приложение")
-        db.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+        if role is None:
+            db.execute("UPDATE users SET role = '', status = 'rejected', is_active = 0 WHERE id = ?", (user_id,))
+        else:
+            db.execute("UPDATE users SET role = ?, status = 'approved', is_active = 1 WHERE id = ?", (role, user_id))
     return {"ok": True}
 
 
