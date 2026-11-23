@@ -52,7 +52,7 @@ function showRecipe(recipe, tile = document.querySelector(`[data-recipe-id="${re
   const detail = tile?.querySelector("[data-recipe-detail]") || $("#recipe-detail");
   if (!detail) return;
   detail.hidden = false;
-  detail.innerHTML = `<button class="secondary" data-close-recipe type="button">Свернуть</button>${recipe.photo_url ? `<img class="recipe-photo" src="${escapeHtml(recipe.photo_url)}" alt="${escapeHtml(recipe.title)}">` : ""}<p class="eyebrow">${escapeHtml(recipe.category)}</p><div class="detail-title-row"><h2>${escapeHtml(recipe.title)}</h2>${isAdmin ? `<button class="pencil" data-detail-edit-recipe aria-label="Изменить техкарту" type="button">✎</button>` : ""}</div><div class="detail-ingredients">${recipe.ingredients.map((item) => `<span class="ingredient">${escapeHtml(item)}</span>`).join("")}</div><p>${escapeHtml(recipe.recipe_text)}</p>${recipe.notes ? `<p class="muted">${escapeHtml(recipe.notes)}</p>` : ""}`;
+  detail.innerHTML = `<div class="recipe-detail-content">${recipe.photo_url ? `<img class="recipe-photo" src="${escapeHtml(recipe.photo_url)}" alt="${escapeHtml(recipe.title)}">` : ""}<p class="eyebrow">${escapeHtml(recipe.category)}</p><div class="detail-title-row"><h2>${escapeHtml(recipe.title)}</h2>${isAdmin ? `<button class="pencil" data-detail-edit-recipe aria-label="Изменить техкарту" type="button">✎</button>` : ""}</div><div class="detail-ingredients">${recipe.ingredients.map((item) => `<span class="ingredient">${escapeHtml(item)}</span>`).join("")}</div><div class="recipe-text"><p>${escapeHtml(recipe.recipe_text)}</p></div>${recipe.notes ? `<p class="muted recipe-notes">${escapeHtml(recipe.notes)}</p>` : ""}</div><button class="secondary recipe-collapse" data-close-recipe type="button">Свернуть</button>`;
   detail.querySelector("[data-close-recipe]").addEventListener("click", () => { detail.hidden = true; });
   detail.querySelector("[data-detail-edit-recipe]")?.addEventListener("click", () => renderRecipeEditor(recipe, tile));
 }
@@ -76,12 +76,13 @@ $("#recipe-list").addEventListener("click", (event) => {
 });
 
 function renderNewRecipeEditor() {
-  const detail = $("#recipe-detail");
+  const detail = $("#new-recipe-inline");
+  if (!detail) return;
+  if (!detail.hidden) { detail.hidden = true; return; }
   detail.hidden = false;
-  detail.innerHTML = `<button class="secondary" id="cancel-new-recipe" type="button">← К списку</button><form id="new-recipe-form" class="form recipe-editor"><input name="title" placeholder="Название позиции" required><input name="category" value="Коктейль" placeholder="Категория" required><textarea name="ingredients" placeholder="Ингредиенты, каждый с новой строки" required></textarea><textarea name="recipe_text" placeholder="Способ приготовления" required></textarea><textarea name="notes" placeholder="Примечания"></textarea><input name="photo_url" placeholder="URL фотографии"><button class="primary" type="submit">Добавить позицию</button></form>`;
-  $("#recipe-list").hidden = true;
-  $("#cancel-new-recipe").addEventListener("click", () => { detail.hidden = true; $("#recipe-list").hidden = false; });
-  $("#new-recipe-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await adminRequest("/api/admin/recipes", { method: "POST", body: JSON.stringify({ title: form.get("title"), category: form.get("category"), ingredients: String(form.get("ingredients")).split("\n").map((item) => item.trim()).filter(Boolean), recipe_text: form.get("recipe_text"), notes: form.get("notes"), photo_url: form.get("photo_url") }) }); notify("Позиция добавлена."); detail.hidden = true; $("#recipe-list").hidden = false; loadAdmin(); } catch { notify("Не удалось добавить позицию."); } });
+  detail.innerHTML = `<div class="new-recipe-head"><b>Новая позиция</b><button class="secondary" id="cancel-new-recipe" type="button">Закрыть</button></div><form id="new-recipe-form" class="form recipe-editor"><label>Название<input name="title" placeholder="Например, Негрони" required></label><label>Категория<input name="category" value="Коктейль" placeholder="Категория" required></label><label>Ингредиенты<textarea name="ingredients" placeholder="Каждый ингредиент с новой строки" required></textarea></label><label>Способ приготовления<textarea name="recipe_text" placeholder="Опишите приготовление" required></textarea></label><label>Примечания<textarea name="notes" placeholder="Необязательно"></textarea></label><label>Фото<input name="photo_url" placeholder="URL фотографии"></label><button class="primary" type="submit">Сохранить позицию</button></form>`;
+  $("#cancel-new-recipe").addEventListener("click", () => { detail.hidden = true; });
+  $("#new-recipe-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await adminRequest("/api/admin/recipes", { method: "POST", body: JSON.stringify({ title: form.get("title"), category: form.get("category"), ingredients: String(form.get("ingredients")).split("\n").map((item) => item.trim()).filter(Boolean), recipe_text: form.get("recipe_text"), notes: form.get("notes"), photo_url: form.get("photo_url") }) }); notify("Позиция добавлена."); detail.hidden = true; event.currentTarget.reset(); loadAdmin(); } catch { notify("Не удалось добавить позицию."); } });
 }
 
 $("#new-recipe")?.addEventListener("click", renderNewRecipeEditor);
