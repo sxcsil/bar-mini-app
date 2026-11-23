@@ -382,8 +382,14 @@ async def create_order(payload: dict = Body(...), x_telegram_init_data: str | No
     if settings.bot_token and settings.admin_ids:
         bot = Bot(settings.bot_token)
         try:
-            title = "ЗАЛ" if order_type == "hall" else "БАР"; text = f"Заказ {title}\nОт: {user['full_name']}\n\n" + (comment if order_type == "hall" else "\n".join(f"• {i['supplier']} — {i['name']}: {i['quantity']}" for i in items))
-            for admin_id in settings.admin_ids: await bot.send_message(admin_id, text)
+            if order_type == "hall":
+                messages = [f"Заказ ЗАЛ\nОт: {user['full_name']}\n\n{comment}"]
+            else:
+                grouped = {}
+                for item in items: grouped.setdefault(item["supplier"], []).append(item)
+                messages = [f"Заказ БАР — {supplier}\nОт: {user['full_name']}\n\n" + "\n".join(f"• {item['name']}: {item['quantity']}" for item in supplier_items) for supplier, supplier_items in grouped.items()]
+            for admin_id in settings.admin_ids:
+                for text in messages: await bot.send_message(admin_id, text)
         finally: await bot.session.close()
     return {"ok": True, "id": cursor.lastrowid}
 
