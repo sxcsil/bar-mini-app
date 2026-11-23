@@ -362,3 +362,48 @@ async def create_shift(cash_amount: float = Form(0), card_amount: float = Form(0
         finally:
             await bot.session.close()
     return {"ok": True, "shift_id": shift_id}
+
+@app.get("/api/order-items")
+def order_items(x_telegram_init_data: str | None = Header(default=None)):
+    user = approved_user(x_telegram_init_data)
+    if user["role"] != "bartender": return []
+    with connect() as db:
+        rows = db.execute("SELECT s.id AS supplier_id, s.name AS supplier_name, i.id, i.name FROM suppliers s JOIN supplier_items i ON i.supplier_id=s.id WHERE s.is_active=1 AND i.is_active=1 ORDER BY s.name, i.name").fetchall()
+    return [row_dict(row) for row in rows]
+
+@app.post("/api/orders")
+async def create_order(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    user = approved_user(x_telegram_init_data); order_type = "bar" if user["role"] == "bartender" else "hall"; comment = str(payload.get("comment", "")).strip(); items = payload.get("items", []) if order_type == "bar" else []
+    if order_type == "hall" and not comment: raise HTTPException(400, "Заполните заказ")
+    if order_type == "bar":
+        items = [{"name": str(i.get("name", "")), "quantity": int(i.get("quantity", 0)), "supplier": str(i.get("supplier", ""))} for i in items if int(i.get("quantity", 0)) > 0]
+        if not items: raise HTTPException(400, "Добавьте хотя бы одну позицию")
+    with connect() as db: cursor = db.execute("INSERT INTO orders(user_id, order_type, comment, items, created_at) VALUES (?, ?, ?, ?, ?)", (user["id"], order_type, comment, json.dumps(items, ensure_ascii=False), datetime.utcnow().isoformat()))
+    if settings.bot_token and settings.admin_ids:
+        bot = Bot(settings.bot_token)
+        try:
+            title = "ЗАЛ" if order_type == "hall" else "БАР"; text = f"Заказ {title}\nОт: {user['full_name']}\n\n" + (comment if order_type == "hall" else "\n".join(f"• {i['supplier']} — {i['name']}: {i['quantity']}" for i in items))
+            for admin_id in settings.admin_ids: await bot.send_message(admin_id, text)
+        finally: await bot.session.close()
+    return {"ok": True, "id": cursor.lastrowid}
+
+@app.get("/api/admin/suppliers")
+def admin_suppliers(x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data)
+    with connect() as db:
+        suppliers = [row_dict(r) for r in db.execute("SELECT * FROM suppliers ORDER BY name").fetchall()]; items = [row_dict(r) for r in db.execute("SELECT * FROM supplier_items ORDER BY name").fetchall()]
+    return {"suppliers": suppliers, "items": items}
+
+@app.post("/api/admin/suppliers")
+def add_supplier(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data); name = str(payload.get("name", "")).strip()
+    if not name: raise HTTPException(400, "Укажите поставщика")
+    with connect() as db: cursor = db.execute("INSERT INTO suppliers(name, created_at) VALUES (?, ?)", (name, datetime.utcnow().isoformat()))
+    return {"id": cursor.lastrowid}
+
+@app.post("/api/admin/supplier-items")
+def add_supplier_item(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data); name = str(payload.get("name", "")).strip(); supplier_id = int(payload.get("supplier_id", 0))
+    if not name or not supplier_id: raise HTTPException(400, "Укажите поставщика и позицию")
+    with connect() as db: cursor = db.execute("INSERT INTO supplier_items(supplier_id, name, created_at) VALUES (?, ?, ?)", (supplier_id, name, datetime.utcnow().isoformat()))
+    return {"id": cursor.lastrowid}

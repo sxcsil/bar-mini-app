@@ -7,6 +7,7 @@ let adminRecipes = [];
 let visibleRecipes = [];
 let adminUsers = [];
 let isAdmin = false;
+let currentRole = "";
 let calendarDate = new Date();
 let selectedCalendarDate = "";
 
@@ -24,9 +25,10 @@ async function loadMe() {
     const response = await fetch("/api/me", { headers });
     if (!response.ok) throw new Error("auth");
     const user = await response.json();
+    currentRole = user.role || "";
     $("#greeting").textContent = `Привет, ${user.full_name.split(" ")[0]}`;
     if (user.status !== "approved") { $("#onboarding").hidden = false; $("#home-content").hidden = true; $("#onboarding .muted").textContent = "Заполните анкету. Администратор подтвердит доступ в личном чате."; document.querySelectorAll(".tab:not([data-page='home']):not([data-page='recipes'])").forEach((tab) => tab.hidden = true); $("#onboarding-result").textContent = user.status === "pending" ? "Заявка уже отправлена. Дождитесь подтверждения администратора." : "Заполните анкету для доступа."; }
-    if (user.role === "admin") { isAdmin = true; document.querySelectorAll(".admin-only").forEach((element) => element.classList.add("visible")); loadAdmin(); }
+    if (user.role === "admin") { isAdmin = true; document.querySelectorAll(".admin-only").forEach((element) => element.classList.add("visible")); loadAdmin(); loadSupplierAdmin(); } loadOrders();
   } catch { $("#greeting").textContent = "Барная смена"; }
 }
 
@@ -185,4 +187,22 @@ document.addEventListener("click", async (event) => { const target = event.targe
 document.addEventListener("click", async (event) => { const target = event.target.closest("[data-admin-staff-id]"); if (!target) return; const user = (window.adminDirectory || []).find((item) => item.id === Number(target.dataset.adminStaffId)); if (!user) return; const answer = window.prompt("Роль: admin, waiter, bartender или none для полного снятия доступа", user.role || "none"); if (answer === null) return; const role = answer === "none" ? null : answer; if (role !== null && !["admin", "waiter", "bartender"].includes(role)) return; try { await adminRequest(`/api/admin/users/${user.id}/role`, { method: "PATCH", body: JSON.stringify({ role }) }); loadAdmin(); loadStaff(); } catch { $("#admin-result").textContent = "Не удалось изменить роль."; } });
 document.addEventListener("change", async (event) => { const target = event.target; if (target.dataset.shift) { try { await adminRequest(`/api/admin/shifts/${target.dataset.shift}`, { method: "PATCH", body: JSON.stringify({ status: target.value }) }); } catch { $("#admin-result").textContent = "Не удалось обновить отчёт."; } } });
 
-loadMe(); loadRecipes(); loadSchedule(); loadStaff();
+async function loadOrders() {
+  if (isAdmin) { $("#admin-order-config").hidden = false; return; }
+  if (currentRole === "waiter") { $("#hall-order").hidden = false; return; }
+  if (currentRole !== "bartender") return;
+  $("#bar-order").hidden = false;
+  const response = await fetch("/api/order-items", { headers }); if (!response.ok) return;
+  const rows = await response.json(); const groups = rows.reduce((map, row) => ((map[row.supplier_name] ||= []).push(row), map), {}); const quantities = {};
+  $("#supplier-order-list").innerHTML = Object.entries(groups).map(([supplier, items]) => `<div class="supplier-order-group"><h3>${escapeHtml(supplier)}</h3>${items.map((item) => { quantities[item.id] = 0; return `<div class="supplier-order-row"><span>${escapeHtml(item.name)}</span><span class="order-quantity"><button class="mini-button" data-order-minus="${item.id}" type="button">−</button><b id="order-qty-${item.id}">0</b><button class="mini-button" data-order-plus="${item.id}" type="button">+</button></span></div>`; }).join("")}</div>`).join("") || '<p class="muted">Администратор ещё не добавил позиции.</p>';
+  document.querySelectorAll("[data-order-plus],[data-order-minus]").forEach((button) => button.addEventListener("click", () => { const id = Number(button.dataset.orderPlus || button.dataset.orderMinus); quantities[id] = Math.max(0, quantities[id] + (button.dataset.orderPlus ? 1 : -1)); $(`#order-qty-${id}`).textContent = quantities[id]; }));
+  $("#send-bar-order").onclick = async () => { const items = rows.filter((item) => quantities[item.id] > 0).map((item) => ({ name: item.name, supplier: item.supplier_name, quantity: quantities[item.id] })); await submitOrder({ items }, "Заказ БАР отправлен."); };
+}
+async function submitOrder(payload, success) { const response = await fetch("/api/orders", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(payload) }); $("#order-result").textContent = response.ok ? success : ((await response.json().catch(() => ({}))).detail || "Не удалось отправить заказ."); }
+$("#send-hall-order")?.addEventListener("click", () => submitOrder({ comment: $("#hall-order-text").value }, "Заказ ЗАЛ отправлен."));
+async function loadSupplierAdmin() { if (!isAdmin) return; $("#admin-order-config").hidden = false; const response = await adminRequest("/api/admin/suppliers"); const suppliers = response.suppliers; $("#supplier-admin").innerHTML = `<form class="supplier-admin-form" id="supplier-form"><input name="name" placeholder="Новая категория / поставщик" required><button class="mini-button" type="submit">Добавить категорию</button></form>${suppliers.map((s) => `<div class="supplier-admin-block"><b>${escapeHtml(s.name)}</b><form class="supplier-admin-form supplier-item-form" data-supplier="${s.id}"><input name="name" placeholder="Новая позиция" required><button class="mini-button" type="submit">Добавить позицию</button></form></div>`).join("")}`;
+  $("#supplier-form").onsubmit = async (e) => { e.preventDefault(); await adminRequest("/api/admin/suppliers", { method: "POST", body: JSON.stringify({ name: new FormData(e.currentTarget).get("name") }) }); loadSupplierAdmin(); };
+  document.querySelectorAll(".supplier-item-form").forEach((form) => form.onsubmit = async (e) => { e.preventDefault(); await adminRequest("/api/admin/supplier-items", { method: "POST", body: JSON.stringify({ supplier_id: form.dataset.supplier, name: new FormData(form).get("name") }) }); loadSupplierAdmin(); });
+}
+
+loadMe(); loadRecipes(); loadSchedule(); loadStaff(); loadOrders(); loadSupplierAdmin();
