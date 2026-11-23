@@ -3,3 +3,4 @@
 .staff-telegram{margin-left:auto;color:#72b9e8;text-decoration:none;font-size:20px;padding:4px 7px}.staff-calendar-head{text-align:center;text-transform:capitalize;margin-bottom:10px}.staff-calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:5px}.staff-calendar-grid .calendar-day{min-height:58px}.staff-calendar-grid .calendar-day.my-shift{background:#31513e;border-color:#63d39c}.date-hint{display:block;color:#a69b94;font-size:12px;margin-bottom:4px}
 
 .staff-telegram{margin-left:auto;color:#72b9e8;text-decoration:none;font-size:20px;padding:4px 7px;border:0;background:transparent;cursor:pointer}
+.staff-telegram-disabled{opacity:.35;cursor:not-allowed}

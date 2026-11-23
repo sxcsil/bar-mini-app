@@ -40,7 +40,11 @@ def current_user(init_data: str | None):
     if telegram_id in settings.admin_ids:
         return upsert_user(telegram_id, full_name, "admin", username)
     existing = user_by_telegram_id(telegram_id)
-    return existing or create_pending_user(telegram_id, full_name, "", "bartender")
+    if existing:
+        if username and existing["username"] != username:
+            return upsert_user(telegram_id, full_name, username=username)
+        return existing
+    return create_pending_user(telegram_id, full_name, "", "bartender", username)
 
 
 def approved_user(init_data: str | None):
@@ -73,7 +77,7 @@ async def onboarding(payload: dict = Body(...), x_telegram_init_data: str | None
     role = payload.get("role")
     if not full_name or role not in {"waiter", "bartender", "admin"}:
         raise HTTPException(400, "Заполните ФИО и роль")
-    user = create_pending_user(telegram_id, full_name, "", role)
+    user = create_pending_user(telegram_id, full_name, "", role, str(telegram_user.get("username") or ""))
     notification_sent = False
     if settings.bot_token and settings.admin_ids:
         bot = Bot(settings.bot_token)

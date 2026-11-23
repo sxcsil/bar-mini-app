@@ -117,12 +117,12 @@ def upsert_user(telegram_id: int, full_name: str, role: str | None = None, usern
         return db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
 
 
-def create_pending_user(telegram_id: int, full_name: str, phone: str, role: str) -> sqlite3.Row:
+def create_pending_user(telegram_id: int, full_name: str, phone: str, role: str, username: str = "") -> sqlite3.Row:
     with connect() as db:
         db.execute(
-            "INSERT INTO users(telegram_id, full_name, phone, role, status, is_active, created_at) VALUES (?, ?, ?, ?, 'pending', 1, ?) "
-            "ON CONFLICT(telegram_id) DO UPDATE SET full_name=excluded.full_name, phone=excluded.phone, role=excluded.role, status='pending', is_active=1",
-            (telegram_id, full_name, phone, role, datetime.utcnow().isoformat()),
+            "INSERT INTO users(telegram_id, full_name, phone, role, username, status, is_active, created_at) VALUES (?, ?, ?, ?, ?, 'pending', 1, ?) "
+            "ON CONFLICT(telegram_id) DO UPDATE SET full_name=excluded.full_name, phone=excluded.phone, role=excluded.role, username=excluded.username, status='pending', is_active=1",
+            (telegram_id, full_name, phone, role, username, datetime.utcnow().isoformat()),
         )
         return db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
 

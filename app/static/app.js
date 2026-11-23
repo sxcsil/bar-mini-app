@@ -117,7 +117,7 @@ async function loadStaff() {
   ];
   $("#staff-groups").innerHTML = groups.map(([role, label]) => {
     const members = staff.filter((user) => user.role === role);
-    return `<section class="staff-group"><h3>${label}<span>${members.length}</span></h3><div class="staff-list">${members.map((user) => `<div class="staff-card"><span class="staff-avatar">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><span><b>${escapeHtml(user.full_name)}</b><small>${label.slice(0, -1)}</small></span>${user.username ? `<button class="staff-telegram" data-open-chat="${encodeURIComponent(user.username)}" aria-label="Открыть личный чат" type="button">➤</button>` : ""}</div>`).join("") || '<p class="muted">Пока нет сотрудников.</p>'}</div></section>`;
+    return `<section class="staff-group"><h3>${label}<span>${members.length}</span></h3><div class="staff-list">${members.map((user) => { const username = String(user.username || "").replace(/^@/, ""); return `<div class="staff-card"><span class="staff-avatar">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><span><b>${escapeHtml(user.full_name)}</b><small>${label.slice(0, -1)}</small></span>${username ? `<a class="staff-telegram" data-open-chat="${encodeURIComponent(username)}" href="https://t.me/${encodeURIComponent(username)}" aria-label="Открыть личный чат с ${escapeHtml(user.full_name)}" title="Открыть чат в Telegram">➤</a>` : `<span class="staff-telegram staff-telegram-disabled" title="У сотрудника не указан username Telegram" aria-label="Username Telegram не указан">➤</span>`}</div>`; }).join("") || '<p class="muted">Пока нет сотрудников.</p>'}</div></section>`;
   }).join("");
   window.staffDirectory = staff;
 }
@@ -126,11 +126,11 @@ $("#staff-refresh")?.addEventListener("click", loadStaff);
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-open-chat]");
   if (!button) return;
-  const link = `https://t.me/${decodeURIComponent(button.dataset.openChat)}`;
+  const link = button.href || `https://t.me/${decodeURIComponent(button.dataset.openChat)}`;
   try {
-    if (tg?.openTelegramLink) tg.openTelegramLink(link);
-    else window.location.href = link;
-  } catch { window.location.href = link; }
+    if (tg?.openTelegramLink) { event.preventDefault(); tg.openTelegramLink(link); }
+    else if (tg?.openLink) { event.preventDefault(); tg.openLink(link); }
+  } catch { /* the anchor href is the browser fallback */ }
 });
 $("#day-off-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/day-off", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#day-off-result").textContent = response.ok ? "Заявка отправлена администратору." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
 $("#swap-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/shift-swap", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#swap-result").textContent = response.ok ? "Заявка на обмен отправлена." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
