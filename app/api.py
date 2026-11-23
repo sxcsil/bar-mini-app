@@ -238,7 +238,10 @@ def update_recipe(recipe_id: int, payload: dict = Body(...), x_telegram_init_dat
 def delete_recipe(recipe_id: int, x_telegram_init_data: str | None = Header(default=None)):
     admin_user(x_telegram_init_data)
     with connect() as db:
-        db.execute("UPDATE recipes SET is_active = 0, updated_at = ? WHERE id = ?", (datetime.utcnow().isoformat(), recipe_id))
+        exists = db.execute("SELECT id FROM recipes WHERE id = ?", (recipe_id,)).fetchone()
+        if not exists:
+            raise HTTPException(404, "Техкарта не найдена")
+        db.execute("DELETE FROM recipes WHERE id = ?", (recipe_id,))
     return {"ok": True}
 
 
