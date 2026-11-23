@@ -26,7 +26,7 @@ def startup() -> None:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC / "index.html")
+    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 
 def current_user(init_data: str | None):
