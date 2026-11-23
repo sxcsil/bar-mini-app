@@ -117,12 +117,21 @@ async function loadStaff() {
   ];
   $("#staff-groups").innerHTML = groups.map(([role, label]) => {
     const members = staff.filter((user) => user.role === role);
-    return `<section class="staff-group"><h3>${label}<span>${members.length}</span></h3><div class="staff-list">${members.map((user) => `<div class="staff-card"><span class="staff-avatar">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><span><b>${escapeHtml(user.full_name)}</b><small>${label.slice(0, -1)}</small></span><a class="staff-telegram" href="tg://user?id=${encodeURIComponent(user.telegram_id)}" aria-label="Открыть личный чат">➤</a></div>`).join("") || '<p class="muted">Пока нет сотрудников.</p>'}</div></section>`;
+    return `<section class="staff-group"><h3>${label}<span>${members.length}</span></h3><div class="staff-list">${members.map((user) => `<div class="staff-card"><span class="staff-avatar">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><span><b>${escapeHtml(user.full_name)}</b><small>${label.slice(0, -1)}</small></span><button class="staff-telegram" data-open-chat="${encodeURIComponent(user.telegram_id)}" aria-label="Открыть личный чат" type="button">➤</button></div>`).join("") || '<p class="muted">Пока нет сотрудников.</p>'}</div></section>`;
   }).join("");
   window.staffDirectory = staff;
 }
 
 $("#staff-refresh")?.addEventListener("click", loadStaff);
+document.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-open-chat]");
+  if (!button) return;
+  const link = `tg://user?id=${decodeURIComponent(button.dataset.openChat)}`;
+  try {
+    if (tg?.openTelegramLink) tg.openTelegramLink(link);
+    else window.location.href = link;
+  } catch { window.location.href = link; }
+});
 $("#day-off-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/day-off", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#day-off-result").textContent = response.ok ? "Заявка отправлена администратору." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
 $("#swap-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/shift-swap", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#swap-result").textContent = response.ok ? "Заявка на обмен отправлена." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
 document.querySelectorAll('#schedule input[type="date"]').forEach((input) => { input.setAttribute("aria-label", "Выберите дату"); input.title = "Выберите дату"; const hint = document.createElement("span"); hint.className = "date-hint"; hint.textContent = "Выберите дату"; input.parentElement?.insertBefore(hint, input); });
