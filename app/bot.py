@@ -20,7 +20,7 @@ def mini_app_keyboard() -> InlineKeyboardMarkup:
 @router.message(CommandStart())
 async def start(message: Message) -> None:
     if message.from_user.id in settings.admin_ids:
-        upsert_user(message.from_user.id, message.from_user.full_name, "admin")
+        upsert_user(message.from_user.id, message.from_user.full_name, "admin", message.from_user.username or "")
         await message.answer("Барная смена на связи. Откройте приложение:", reply_markup=mini_app_keyboard())
         await send_pending_access_requests(message.bot, message.from_user.id)
     else:

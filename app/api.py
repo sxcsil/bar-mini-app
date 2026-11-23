@@ -36,8 +36,9 @@ def current_user(init_data: str | None):
         raise HTTPException(401, str(exc)) from exc
     telegram_id = int(user.get("id", 0))
     full_name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")])) or "Новый пользователь"
+    username = str(user.get("username") or "")
     if telegram_id in settings.admin_ids:
-        return upsert_user(telegram_id, full_name, "admin")
+        return upsert_user(telegram_id, full_name, "admin", username)
     existing = user_by_telegram_id(telegram_id)
     return existing or create_pending_user(telegram_id, full_name, "", "bartender")
 
@@ -128,7 +129,7 @@ def public_calendar(month: str = "", x_telegram_init_data: str | None = Header(d
 def staff(x_telegram_init_data: str | None = Header(default=None)):
     approved_user(x_telegram_init_data)
     with connect() as db:
-        rows = db.execute("SELECT id, telegram_id, full_name, role, created_at FROM users WHERE is_active = 1 AND status = 'approved' ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'waiter' THEN 2 WHEN 'bartender' THEN 3 ELSE 4 END, full_name").fetchall()
+        rows = db.execute("SELECT id, telegram_id, username, full_name, role, created_at FROM users WHERE is_active = 1 AND status = 'approved' ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'waiter' THEN 2 WHEN 'bartender' THEN 3 ELSE 4 END, full_name").fetchall()
     return [row_dict(row) for row in rows]
 
 

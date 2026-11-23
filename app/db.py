@@ -26,6 +26,7 @@ def init_db() -> None:
                 is_active INTEGER NOT NULL DEFAULT 1,
                 status TEXT NOT NULL DEFAULT 'approved',
                 phone TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS recipes (
@@ -92,6 +93,8 @@ def init_db() -> None:
             db.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'")
         if "phone" not in columns:
             db.execute("ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
+        if "username" not in columns:
+            db.execute("ALTER TABLE users ADD COLUMN username TEXT NOT NULL DEFAULT ''")
         if db.execute("SELECT COUNT(*) FROM recipes").fetchone()[0] == 0:
             now = datetime.utcnow().isoformat()
             demo = [
@@ -101,16 +104,16 @@ def init_db() -> None:
             db.executemany("INSERT INTO recipes(title, category, ingredients, recipe_text, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", demo)
 
 
-def upsert_user(telegram_id: int, full_name: str, role: str | None = None) -> sqlite3.Row:
+def upsert_user(telegram_id: int, full_name: str, role: str | None = None, username: str = "") -> sqlite3.Row:
     with connect() as db:
         existing = db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
         if existing:
             if role:
-                db.execute("UPDATE users SET full_name = ?, role = ?, status = 'approved', is_active = 1 WHERE telegram_id = ?", (full_name, role, telegram_id))
+                db.execute("UPDATE users SET full_name = ?, role = ?, username = ?, status = 'approved', is_active = 1 WHERE telegram_id = ?", (full_name, role, username, telegram_id))
             else:
-                db.execute("UPDATE users SET full_name = ? WHERE telegram_id = ?", (full_name, telegram_id))
+                db.execute("UPDATE users SET full_name = ?, username = ? WHERE telegram_id = ?", (full_name, username, telegram_id))
         else:
-            db.execute("INSERT INTO users(telegram_id, full_name, role, created_at) VALUES (?, ?, ?, ?)", (telegram_id, full_name, role or "bartender", datetime.utcnow().isoformat()))
+            db.execute("INSERT INTO users(telegram_id, full_name, role, username, created_at) VALUES (?, ?, ?, ?, ?)", (telegram_id, full_name, role or "bartender", username, datetime.utcnow().isoformat()))
         return db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
 
 
