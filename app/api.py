@@ -97,9 +97,10 @@ async def onboarding(payload: dict = Body(...), x_telegram_init_data: str | None
 
 @app.get("/api/recipes")
 def recipes(q: str = "", x_telegram_init_data: str | None = Header(default=None)):
-    current_user(x_telegram_init_data)
+    user = current_user(x_telegram_init_data)
     with connect() as db:
-        rows = db.execute("SELECT * FROM recipes WHERE is_active = 1 AND (title LIKE ? OR ingredients LIKE ?) ORDER BY sort_order, title", (f"%{q}%", f"%{q}%")).fetchall()
+        active_filter = "" if user["role"] == "admin" else " AND is_active = 1"
+        rows = db.execute(f"SELECT * FROM recipes WHERE (title LIKE ? OR ingredients LIKE ?){active_filter} ORDER BY sort_order, title", (f"%{q}%", f"%{q}%")).fetchall()
     result = []
     for row in rows:
         item = row_dict(row)
@@ -141,7 +142,7 @@ def staff(x_telegram_init_data: str | None = Header(default=None)):
 def admin_overview(x_telegram_init_data: str | None = Header(default=None)):
     admin_user(x_telegram_init_data)
     with connect() as db:
-        recipes = db.execute("SELECT * FROM recipes WHERE is_active = 1 ORDER BY sort_order, title").fetchall()
+        recipes = db.execute("SELECT * FROM recipes ORDER BY is_active DESC, sort_order, title").fetchall()
         users = db.execute("SELECT id, telegram_id, full_name, role, is_active, created_at FROM users ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'waiter' THEN 2 WHEN 'bartender' THEN 3 ELSE 4 END, full_name").fetchall()
         requests = db.execute("SELECT r.*, u.full_name FROM day_off_requests r JOIN users u ON u.id = r.user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
         swaps = db.execute("SELECT r.*, u.full_name AS requester_name, t.full_name AS target_name FROM shift_swap_requests r JOIN users u ON u.id = r.requester_id LEFT JOIN users t ON t.id = r.target_user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
@@ -237,6 +238,18 @@ def delete_recipe(recipe_id: int, x_telegram_init_data: str | None = Header(defa
     with connect() as db:
         db.execute("UPDATE recipes SET is_active = 0, updated_at = ? WHERE id = ?", (datetime.utcnow().isoformat(), recipe_id))
     return {"ok": True}
+
+
+@app.patch("/api/admin/recipes/{recipe_id}/archive")
+def archive_recipe(recipe_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data)
+    archived = bool(payload.get("archived", True))
+    with connect() as db:
+        exists = db.execute("SELECT id FROM recipes WHERE id = ?", (recipe_id,)).fetchone()
+        if not exists:
+            raise HTTPException(404, "Техкарта не найдена")
+        db.execute("UPDATE recipes SET is_active = ?, updated_at = ? WHERE id = ?", (0 if archived else 1, datetime.utcnow().isoformat(), recipe_id))
+    return {"ok": True, "archived": archived}
 
 
 @app.post("/api/admin/schedule")
