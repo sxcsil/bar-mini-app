@@ -67,6 +67,10 @@ function renderRecipeEditor(recipe, tile) {
 
 $("#recipe-search").addEventListener("input", (event) => loadRecipes(event.target.value));
 $("#recipe-list").addEventListener("click", (event) => {
+  const close = event.target.closest("[data-close-recipe]");
+  if (close) { close.closest("[data-recipe-detail]").hidden = true; return; }
+  const detailEdit = event.target.closest("[data-detail-edit-recipe]");
+  if (detailEdit) return;
   if (event.target.closest("[data-recipe-detail]")) return;
   const edit = event.target.closest("[data-edit-recipe]");
   if (edit) { event.stopPropagation(); editRecipe(Number(edit.dataset.editRecipe)); return; }
