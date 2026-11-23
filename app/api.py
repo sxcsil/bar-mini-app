@@ -413,3 +413,31 @@ def add_supplier_item(payload: dict = Body(...), x_telegram_init_data: str | Non
     if not name or not supplier_id: raise HTTPException(400, "Укажите поставщика и позицию")
     with connect() as db: cursor = db.execute("INSERT INTO supplier_items(supplier_id, name, created_at) VALUES (?, ?, ?)", (supplier_id, name, datetime.utcnow().isoformat()))
     return {"id": cursor.lastrowid}
+
+@app.patch("/api/admin/suppliers/{supplier_id}")
+def update_supplier(supplier_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data); name = str(payload.get("name", "")).strip(); active = int(bool(payload.get("is_active", True)))
+    with connect() as db:
+        if not db.execute("SELECT id FROM suppliers WHERE id = ?", (supplier_id,)).fetchone(): raise HTTPException(404, "Категория не найдена")
+        db.execute("UPDATE suppliers SET name = ?, is_active = ? WHERE id = ?", (name, active, supplier_id))
+    return {"ok": True}
+
+@app.delete("/api/admin/suppliers/{supplier_id}")
+def delete_supplier(supplier_id: int, x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data)
+    with connect() as db: db.execute("DELETE FROM suppliers WHERE id = ?", (supplier_id,))
+    return {"ok": True}
+
+@app.patch("/api/admin/supplier-items/{item_id}")
+def update_supplier_item(item_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data); name = str(payload.get("name", "")).strip(); active = int(bool(payload.get("is_active", True)))
+    with connect() as db:
+        if not db.execute("SELECT id FROM supplier_items WHERE id = ?", (item_id,)).fetchone(): raise HTTPException(404, "Позиция не найдена")
+        db.execute("UPDATE supplier_items SET name = ?, is_active = ? WHERE id = ?", (name, active, item_id))
+    return {"ok": True}
+
+@app.delete("/api/admin/supplier-items/{item_id}")
+def delete_supplier_item(item_id: int, x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data)
+    with connect() as db: db.execute("DELETE FROM supplier_items WHERE id = ?", (item_id,))
+    return {"ok": True}
