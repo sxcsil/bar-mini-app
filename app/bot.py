@@ -87,6 +87,8 @@ async def process_day_off(callback: CallbackQuery) -> None:
             await callback.answer("Заявка уже обработана", show_alert=True)
             return
         db.execute("UPDATE day_off_requests SET status = ?, processed_at = ? WHERE id = ?", (status, __import__("datetime").datetime.utcnow().isoformat(), int(request_id)))
+        if status == "approved":
+            db.execute("DELETE FROM schedules WHERE user_id = (SELECT user_id FROM day_off_requests WHERE id = ?) AND work_date = ?", (int(request_id), request["request_date"]))
     label = "одобрена" if status == "approved" else "отклонена"
     await callback.message.edit_text(f"Заявка на {request['request_date']} {label}.")
     if settings.bot_token:

@@ -77,6 +77,8 @@ async def onboarding(payload: dict = Body(...), x_telegram_init_data: str | None
     role = payload.get("role")
     if not full_name or role not in {"waiter", "bartender", "admin"}:
         raise HTTPException(400, "Заполните ФИО и роль")
+    if existing and existing["status"] == "pending" and str(existing["created_at"] or "")[:10] == date.today().isoformat():
+        return {**row_dict(existing), "notification_sent": False, "already_submitted": True}
     user = create_pending_user(telegram_id, full_name, "", role, str(telegram_user.get("username") or ""))
     notification_sent = False
     if settings.bot_token and settings.admin_ids:

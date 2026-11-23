@@ -25,7 +25,7 @@ async function loadMe() {
     const response = await fetch("/api/me", { headers });
     if (!response.ok) throw new Error("auth");
     const user = await response.json();
-    currentRole = user.role || "";
+    currentRole = user.role || ""; if (currentRole === "waiter") { document.querySelectorAll("[data-closing-tab]").forEach((el) => el.hidden = true); document.querySelectorAll(".tab[data-page='shift']").forEach((el) => el.hidden = true); }
     $("#greeting").textContent = `Привет, ${user.full_name.split(" ")[0]}`;
     if (user.status !== "approved") { $("#onboarding").hidden = false; $("#home-content").hidden = true; $("#onboarding .muted").textContent = "Заполните анкету. Администратор подтвердит доступ в личном чате."; document.querySelectorAll(".tab:not([data-page='home']):not([data-page='recipes'])").forEach((tab) => tab.hidden = true); $("#onboarding-result").textContent = user.status === "pending" ? "Заявка уже отправлена. Дождитесь подтверждения администратора." : "Заполните анкету для доступа."; }
     if (user.role === "admin") { isAdmin = true; document.querySelectorAll(".admin-only").forEach((element) => element.classList.add("visible")); loadAdmin(); loadSupplierAdmin(); } loadOrders();
@@ -38,7 +38,7 @@ $("#onboarding-form")?.addEventListener("submit", async (event) => {
   const response = await fetch("/api/onboarding", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(Object.fromEntries(form)) });
   let result = null;
   try { result = await response.json(); } catch { result = {}; }
-  $("#onboarding-result").textContent = response.ok ? (result.notification_sent ? "Заявка отправлена. Дождитесь подтверждения администратора." : "Заявка сохранена, но уведомление администратору не доставлено. Администратор увидит её после команды /admin.") : (result.detail || "Не удалось отправить анкету.");
+  $("#onboarding-result").textContent = response.ok ? (result.already_submitted ? "Заявка уже отправлена сегодня. Дождитесь решения администратора." : (result.notification_sent ? "Заявка отправлена. Дождитесь подтверждения администратора." : "Заявка сохранена, но уведомление администратору не доставлено. Администратор увидит её после команды /admin.")) : (result.detail || "Не удалось отправить анкету.");
   if (response.ok) event.currentTarget.querySelector("button").disabled = true;
 });
 
