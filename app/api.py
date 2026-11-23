@@ -416,9 +416,11 @@ def add_supplier_item(payload: dict = Body(...), x_telegram_init_data: str | Non
 
 @app.patch("/api/admin/suppliers/{supplier_id}")
 def update_supplier(supplier_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
-    admin_user(x_telegram_init_data); name = str(payload.get("name", "")).strip(); active = int(bool(payload.get("is_active", True)))
+    admin_user(x_telegram_init_data); active = int(bool(payload.get("is_active", True)))
     with connect() as db:
-        if not db.execute("SELECT id FROM suppliers WHERE id = ?", (supplier_id,)).fetchone(): raise HTTPException(404, "Категория не найдена")
+        current = db.execute("SELECT name FROM suppliers WHERE id = ?", (supplier_id,)).fetchone()
+        if not current: raise HTTPException(404, "Категория не найдена")
+        name = str(payload.get("name") or current["name"]).strip()
         db.execute("UPDATE suppliers SET name = ?, is_active = ? WHERE id = ?", (name, active, supplier_id))
     return {"ok": True}
 
@@ -430,9 +432,11 @@ def delete_supplier(supplier_id: int, x_telegram_init_data: str | None = Header(
 
 @app.patch("/api/admin/supplier-items/{item_id}")
 def update_supplier_item(item_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
-    admin_user(x_telegram_init_data); name = str(payload.get("name", "")).strip(); active = int(bool(payload.get("is_active", True)))
+    admin_user(x_telegram_init_data); active = int(bool(payload.get("is_active", True)))
     with connect() as db:
-        if not db.execute("SELECT id FROM supplier_items WHERE id = ?", (item_id,)).fetchone(): raise HTTPException(404, "Позиция не найдена")
+        current = db.execute("SELECT name FROM supplier_items WHERE id = ?", (item_id,)).fetchone()
+        if not current: raise HTTPException(404, "Позиция не найдена")
+        name = str(payload.get("name") or current["name"]).strip()
         db.execute("UPDATE supplier_items SET name = ?, is_active = ? WHERE id = ?", (name, active, item_id))
     return {"ok": True}
 
