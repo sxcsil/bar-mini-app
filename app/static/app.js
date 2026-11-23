@@ -26,7 +26,7 @@ async function loadMe() {
     const user = await response.json();
     $("#greeting").textContent = `Привет, ${user.full_name.split(" ")[0]}`;
     if (user.status !== "approved") { $("#onboarding").hidden = false; $("#home-content").hidden = true; $("#onboarding .muted").textContent = "Заполните анкету. Администратор подтвердит доступ в личном чате."; document.querySelectorAll(".tab:not([data-page='home']):not([data-page='recipes'])").forEach((tab) => tab.hidden = true); $("#onboarding-result").textContent = user.status === "pending" ? "Заявка уже отправлена. Дождитесь подтверждения администратора." : "Заполните анкету для доступа."; }
-    if (user.role === "admin") { isAdmin = true; document.querySelectorAll(".admin-only").forEach((element) => element.classList.add("visible")); const addButton = $("#new-recipe"); if (addButton) $("#recipes .section-head").append(addButton); loadAdmin(); }
+    if (user.role === "admin") { isAdmin = true; document.querySelectorAll(".admin-only").forEach((element) => element.classList.add("visible")); loadAdmin(); }
   } catch { $("#greeting").textContent = "Барная смена"; }
 }
 
@@ -45,32 +45,46 @@ async function loadRecipes(query = "") {
   if (!response.ok) return;
   const recipes = await response.json();
   visibleRecipes = recipes;
-  $("#recipe-list").innerHTML = recipes.map((recipe) => `<article class="recipe-tile" data-recipe-id="${recipe.id}"><div class="recipe-tile-head"><div><p class="eyebrow">${escapeHtml(recipe.category)}</p><h3>${escapeHtml(recipe.title)}</h3></div>${adminRecipes.some((item) => item.id === recipe.id) ? `<button class="pencil admin-only visible" data-edit-recipe="${recipe.id}" aria-label="Изменить техкарту">✎</button>` : ""}</div><div>${recipe.ingredients.map((item) => `<span class="ingredient">${escapeHtml(item)}</span>`).join("")}</div><p class="muted">Нажмите, чтобы открыть техкарту</p></article>`).join("") || '<p class="muted">Ничего не найдено</p>';
+  $("#recipe-list").innerHTML = recipes.map((recipe) => `<article class="recipe-tile" data-recipe-id="${recipe.id}"><div class="recipe-tile-head"><div><p class="eyebrow">${escapeHtml(recipe.category)}</p><h3>${escapeHtml(recipe.title)}</h3></div>${adminRecipes.some((item) => item.id === recipe.id) ? `<button class="pencil admin-only visible" data-edit-recipe="${recipe.id}" aria-label="Изменить техкарту" type="button">✎</button>` : ""}</div><div>${recipe.ingredients.map((item) => `<span class="ingredient">${escapeHtml(item)}</span>`).join("")}</div><p class="muted">Нажмите, чтобы открыть техкарту</p><div class="recipe-inline-detail" data-recipe-detail="${recipe.id}" hidden></div></article>`).join("") || '<p class="muted">Ничего не найдено</p>';
 }
 
-function showRecipe(recipe) {
-  const detail = $("#recipe-detail");
+function showRecipe(recipe, tile = document.querySelector(`[data-recipe-id="${recipe.id}"]`)) {
+  const detail = tile?.querySelector("[data-recipe-detail]") || $("#recipe-detail");
+  if (!detail) return;
   detail.hidden = false;
-  detail.innerHTML = `<button class="secondary" id="close-recipe" type="button">← К списку</button>${recipe.photo_url ? `<img class="recipe-photo" src="${escapeHtml(recipe.photo_url)}" alt="${escapeHtml(recipe.title)}">` : ""}<p class="eyebrow">${escapeHtml(recipe.category)}</p><div class="detail-title-row"><h2>${escapeHtml(recipe.title)}</h2>${isAdmin ? `<button class="pencil" id="detail-edit-recipe" aria-label="Изменить техкарту">✎</button>` : ""}</div><div class="detail-ingredients">${recipe.ingredients.map((item) => `<span class="ingredient">${escapeHtml(item)}</span>`).join("")}</div><p>${escapeHtml(recipe.recipe_text)}</p>${recipe.notes ? `<p class="muted">${escapeHtml(recipe.notes)}</p>` : ""}`;
-  $("#recipe-list").hidden = true;
-  $("#close-recipe").addEventListener("click", () => { detail.hidden = true; $("#recipe-list").hidden = false; });
-  $("#detail-edit-recipe")?.addEventListener("click", () => renderRecipeEditor(recipe));
+  detail.innerHTML = `<button class="secondary" data-close-recipe type="button">Свернуть</button>${recipe.photo_url ? `<img class="recipe-photo" src="${escapeHtml(recipe.photo_url)}" alt="${escapeHtml(recipe.title)}">` : ""}<p class="eyebrow">${escapeHtml(recipe.category)}</p><div class="detail-title-row"><h2>${escapeHtml(recipe.title)}</h2>${isAdmin ? `<button class="pencil" data-detail-edit-recipe aria-label="Изменить техкарту" type="button">✎</button>` : ""}</div><div class="detail-ingredients">${recipe.ingredients.map((item) => `<span class="ingredient">${escapeHtml(item)}</span>`).join("")}</div><p>${escapeHtml(recipe.recipe_text)}</p>${recipe.notes ? `<p class="muted">${escapeHtml(recipe.notes)}</p>` : ""}`;
+  detail.querySelector("[data-close-recipe]").addEventListener("click", () => { detail.hidden = true; });
+  detail.querySelector("[data-detail-edit-recipe]")?.addEventListener("click", () => renderRecipeEditor(recipe, tile));
 }
 
-function renderRecipeEditor(recipe) {
-  const detail = $("#recipe-detail");
-  detail.innerHTML = `<button class="secondary" id="cancel-recipe-edit" type="button">← К техкарте</button><form id="recipe-edit-form" class="form recipe-editor"><input name="title" value="${escapeHtml(recipe.title)}" required><input name="category" value="${escapeHtml(recipe.category)}" required><textarea name="ingredients" required>${escapeHtml(recipe.ingredients.join("\n"))}</textarea><textarea name="recipe_text" required>${escapeHtml(recipe.recipe_text)}</textarea><textarea name="notes">${escapeHtml(recipe.notes || "")}</textarea><input name="photo_url" value="${escapeHtml(recipe.photo_url || "")}" placeholder="URL фотографии"><button class="primary" type="submit">Сохранить изменения</button></form>`;
-  $("#cancel-recipe-edit").addEventListener("click", () => showRecipe(recipe));
-  $("#recipe-edit-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await adminRequest(`/api/admin/recipes/${recipe.id}`, { method: "PUT", body: JSON.stringify({ title: form.get("title"), category: form.get("category"), ingredients: String(form.get("ingredients")).split("\n"), recipe_text: form.get("recipe_text"), notes: form.get("notes"), photo_url: form.get("photo_url") }) }); const updated = { ...recipe, title: form.get("title"), category: form.get("category"), ingredients: String(form.get("ingredients")).split("\n"), recipe_text: form.get("recipe_text"), notes: form.get("notes"), photo_url: form.get("photo_url") }; adminRecipes = adminRecipes.map((item) => item.id === recipe.id ? updated : item); visibleRecipes = visibleRecipes.map((item) => item.id === recipe.id ? updated : item); showRecipe(updated); loadAdmin(); } catch { notify("Не удалось сохранить техкарту."); } });
+function renderRecipeEditor(recipe, tile) {
+  const detail = tile?.querySelector("[data-recipe-detail]") || $("#recipe-detail");
+  detail.hidden = false;
+  detail.innerHTML = `<button class="secondary" data-cancel-recipe-edit type="button">← К техкарте</button><form data-recipe-edit-form class="form recipe-editor"><input name="title" value="${escapeHtml(recipe.title)}" required><input name="category" value="${escapeHtml(recipe.category)}" required><textarea name="ingredients" required>${escapeHtml(recipe.ingredients.join("\n"))}</textarea><textarea name="recipe_text" required>${escapeHtml(recipe.recipe_text)}</textarea><textarea name="notes">${escapeHtml(recipe.notes || "")}</textarea><input name="photo_url" value="${escapeHtml(recipe.photo_url || "")}" placeholder="URL фотографии"><button class="primary" type="submit">Сохранить изменения</button></form>`;
+  detail.querySelector("[data-cancel-recipe-edit]").addEventListener("click", () => showRecipe(recipe, tile));
+  detail.querySelector("[data-recipe-edit-form]").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await adminRequest(`/api/admin/recipes/${recipe.id}`, { method: "PUT", body: JSON.stringify({ title: form.get("title"), category: form.get("category"), ingredients: String(form.get("ingredients")).split("\n"), recipe_text: form.get("recipe_text"), notes: form.get("notes"), photo_url: form.get("photo_url") }) }); const updated = { ...recipe, title: form.get("title"), category: form.get("category"), ingredients: String(form.get("ingredients")).split("\n"), recipe_text: form.get("recipe_text"), notes: form.get("notes"), photo_url: form.get("photo_url") }; adminRecipes = adminRecipes.map((item) => item.id === recipe.id ? updated : item); visibleRecipes = visibleRecipes.map((item) => item.id === recipe.id ? updated : item); loadRecipes($("#recipe-search").value); } catch { notify("Не удалось сохранить техкарту."); } });
 }
 
 $("#recipe-search").addEventListener("input", (event) => loadRecipes(event.target.value));
 $("#recipe-list").addEventListener("click", (event) => {
+  if (event.target.closest("[data-recipe-detail]")) return;
   const edit = event.target.closest("[data-edit-recipe]");
   if (edit) { event.stopPropagation(); editRecipe(Number(edit.dataset.editRecipe)); return; }
+  if (event.target.closest("[data-close-recipe], [data-detail-edit-recipe]")) return;
   const tile = event.target.closest("[data-recipe-id]");
   if (tile) { const recipe = visibleRecipes.find((item) => item.id === Number(tile.dataset.recipeId)); if (recipe) showRecipe(recipe); }
 });
+
+function renderNewRecipeEditor() {
+  const detail = $("#recipe-detail");
+  detail.hidden = false;
+  detail.innerHTML = `<button class="secondary" id="cancel-new-recipe" type="button">← К списку</button><form id="new-recipe-form" class="form recipe-editor"><input name="title" placeholder="Название позиции" required><input name="category" value="Коктейль" placeholder="Категория" required><textarea name="ingredients" placeholder="Ингредиенты, каждый с новой строки" required></textarea><textarea name="recipe_text" placeholder="Способ приготовления" required></textarea><textarea name="notes" placeholder="Примечания"></textarea><input name="photo_url" placeholder="URL фотографии"><button class="primary" type="submit">Добавить позицию</button></form>`;
+  $("#recipe-list").hidden = true;
+  $("#cancel-new-recipe").addEventListener("click", () => { detail.hidden = true; $("#recipe-list").hidden = false; });
+  $("#new-recipe-form").addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await adminRequest("/api/admin/recipes", { method: "POST", body: JSON.stringify({ title: form.get("title"), category: form.get("category"), ingredients: String(form.get("ingredients")).split("\n").map((item) => item.trim()).filter(Boolean), recipe_text: form.get("recipe_text"), notes: form.get("notes"), photo_url: form.get("photo_url") }) }); notify("Позиция добавлена."); detail.hidden = true; $("#recipe-list").hidden = false; loadAdmin(); } catch { notify("Не удалось добавить позицию."); } });
+}
+
+$("#new-recipe")?.addEventListener("click", renderNewRecipeEditor);
 
 $("#shift-form").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -117,21 +131,12 @@ async function loadStaff() {
   ];
   $("#staff-groups").innerHTML = groups.map(([role, label]) => {
     const members = staff.filter((user) => user.role === role);
-    return `<section class="staff-group"><h3>${label}<span>${members.length}</span></h3><div class="staff-list">${members.map((user) => { const username = String(user.username || "").replace(/^@/, ""); return `<div class="staff-card"><span class="staff-avatar">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><span><b>${escapeHtml(user.full_name)}</b><small>${label.slice(0, -1)}</small></span>${username ? `<a class="staff-telegram" data-open-chat="${encodeURIComponent(username)}" href="https://t.me/${encodeURIComponent(username)}" aria-label="Открыть личный чат с ${escapeHtml(user.full_name)}" title="Открыть чат в Telegram">➤</a>` : `<span class="staff-telegram staff-telegram-disabled" title="У сотрудника не указан username Telegram" aria-label="Username Telegram не указан">➤</span>`}</div>`; }).join("") || '<p class="muted">Пока нет сотрудников.</p>'}</div></section>`;
+    return `<section class="staff-group"><h3>${label}<span>${members.length}</span></h3><div class="staff-list">${members.map((user) => { const username = String(user.username || "").replace(/^@/, ""); return `<div class="staff-card"><span class="staff-avatar">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><span><b>${escapeHtml(user.full_name)}</b><small>${label.slice(0, -1)}${username ? ` · @${escapeHtml(username)}` : " · username не указан"}</small></span>${username ? `<a class="staff-telegram" data-open-chat="${encodeURIComponent(username)}" href="https://t.me/${encodeURIComponent(username)}" target="_blank" rel="noopener" aria-label="Открыть личный чат с ${escapeHtml(user.full_name)}" title="Открыть чат в Telegram">➤</a>` : `<span class="staff-telegram staff-telegram-disabled" title="У сотрудника не указан username Telegram" aria-label="Username Telegram не указан">➤</span>`}</div>`; }).join("") || '<p class="muted">Пока нет сотрудников.</p>'}</div></section>`;
   }).join("");
   window.staffDirectory = staff;
 }
 
 $("#staff-refresh")?.addEventListener("click", loadStaff);
-document.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-open-chat]");
-  if (!button) return;
-  const link = button.href || `https://t.me/${decodeURIComponent(button.dataset.openChat)}`;
-  try {
-    if (tg?.openTelegramLink) { event.preventDefault(); tg.openTelegramLink(link); }
-    else if (tg?.openLink) { event.preventDefault(); tg.openLink(link); }
-  } catch { /* the anchor href is the browser fallback */ }
-});
 $("#day-off-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/day-off", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#day-off-result").textContent = response.ok ? "Заявка отправлена администратору." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
 $("#swap-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/shift-swap", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#swap-result").textContent = response.ok ? "Заявка на обмен отправлена." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
 document.querySelectorAll('#schedule input[type="date"]').forEach((input) => { input.setAttribute("aria-label", "Выберите дату"); input.title = "Выберите дату"; const hint = document.createElement("span"); hint.className = "date-hint"; hint.textContent = "Выберите дату"; input.parentElement?.insertBefore(hint, input); });
@@ -167,7 +172,7 @@ $("#calendar-prev").addEventListener("click", () => { calendarDate.setMonth(cale
 $("#calendar-next").addEventListener("click", () => { calendarDate.setMonth(calendarDate.getMonth() + 1); loadAdmin(); });
 $("#calendar-save").addEventListener("click", async () => { const user_ids = [...document.querySelectorAll("#calendar-user-list input:checked")].map((input) => Number(input.value)); try { await adminRequest("/api/admin/calendar/day", { method: "POST", body: JSON.stringify({ work_date: selectedCalendarDate, user_ids }) }); $("#admin-result").textContent = "График сохранён."; $("#calendar-editor").hidden = true; loadAdmin(); } catch { $("#admin-result").textContent = "Не удалось сохранить график."; } });
 
-async function editRecipe(id) { const recipe = adminRecipes.find((item) => item.id === id); if (!recipe) return; showRecipe(recipe); $("#recipe-list").hidden = true; $("#recipe-detail").hidden = false; renderRecipeEditor(recipe); }
+async function editRecipe(id) { const recipe = adminRecipes.find((item) => item.id === id); if (!recipe) return; const tile = document.querySelector(`[data-recipe-id="${id}"]`); showRecipe(recipe, tile); renderRecipeEditor(recipe, tile); }
 
 $("#admin-refresh")?.addEventListener("click", loadAdmin);
 document.addEventListener("click", async (event) => { const target = event.target.closest("button"); if (!target) return; if (target.dataset.request) { try { await adminRequest(`/api/admin/day-off/${target.dataset.request}`, { method: "PATCH", body: JSON.stringify({ status: target.dataset.status }) }); loadAdmin(); } catch { $("#admin-result").textContent = "Не удалось обработать заявку."; } } if (target.dataset.deleteRecipe) { try { await adminRequest(`/api/admin/recipes/${target.dataset.deleteRecipe}`, { method: "DELETE" }); loadAdmin(); loadRecipes(); } catch { $("#admin-result").textContent = "Не удалось удалить техкарту."; } } if (target.dataset.editRecipe) editRecipe(Number(target.dataset.editRecipe)); });
