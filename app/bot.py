@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramNetworkError
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, Message, WebAppInfo
 
 from .config import settings
 from .db import connect, init_db, upsert_user
@@ -147,6 +147,9 @@ async def run_bot() -> None:
         dp = Dispatcher()
         dp.include_router(router)
         try:
+            menu_url = f"{settings.mini_app_url}{'&' if '?' in settings.mini_app_url else '?'}v=14"
+            await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Приложение", web_app=WebAppInfo(url=menu_url)))
+            logging.info("Telegram menu button updated: %s", menu_url)
             await dp.start_polling(bot)
             return
         except TelegramNetworkError as exc:
