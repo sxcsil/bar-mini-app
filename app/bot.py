@@ -14,7 +14,8 @@ router = Router()
 
 
 def mini_app_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Открыть приложение", web_app=WebAppInfo(url=settings.mini_app_url))]])
+    url = f"{settings.mini_app_url}{'&' if '?' in settings.mini_app_url else '?'}v=14"
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Открыть приложение", web_app=WebAppInfo(url=url))]])
 
 
 @router.message(CommandStart())
@@ -24,7 +25,8 @@ async def start(message: Message) -> None:
         await message.answer("Барная смена на связи. Откройте приложение:", reply_markup=mini_app_keyboard())
         await send_pending_access_requests(message.bot, message.from_user.id)
     else:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Открыть анкету", web_app=WebAppInfo(url=settings.mini_app_url))]])
+        url = f"{settings.mini_app_url}{'&' if '?' in settings.mini_app_url else '?'}v=14"
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Открыть анкету", web_app=WebAppInfo(url=url))]])
         await message.answer("Заполните анкету и выберите роль. Доступ появится после одобрения администратора.", reply_markup=keyboard)
 
 
