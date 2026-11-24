@@ -90,6 +90,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS supplier_items (id INTEGER PRIMARY KEY AUTOINCREMENT, supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE, name TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id), order_type TEXT NOT NULL, comment TEXT NOT NULL DEFAULT '', items TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS shift_hour_confirmations (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id), work_date TEXT NOT NULL, hours REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, processed_at TEXT, UNIQUE(user_id, work_date));
+            CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             """
         )
         columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
@@ -99,16 +100,21 @@ def init_db() -> None:
             db.execute("ALTER TABLE users ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
         if "username" not in columns:
             db.execute("ALTER TABLE users ADD COLUMN username TEXT NOT NULL DEFAULT ''")
-        import_file = Path(__file__).with_name("recipe_import.json")
-        if import_file.exists():
-            try:
-                imported = json.loads(import_file.read_text(encoding="utf-8"))
-                now = datetime.utcnow().isoformat()
-                for recipe in imported:
-                    if not db.execute("SELECT 1 FROM recipes WHERE title = ? AND category = ?", (recipe["title"], recipe["category"])).fetchone():
-                        db.execute("INSERT INTO recipes(title, category, ingredients, recipe_text, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (recipe["title"], recipe["category"], json.dumps(recipe["ingredients"], ensure_ascii=False), recipe.get("recipe_text", ""), recipe.get("notes", ""), now, now))
-            except (OSError, ValueError, KeyError):
-                pass
+        imported_marker = db.execute("SELECT value FROM app_settings WHERE key = 'spreadsheet_recipes_imported_v1'").fetchone()
+        if not imported_marker:
+            # Seed the spreadsheet only on a fresh database. Existing recipe
+            # state (including archived and permanently deleted entries) wins.
+            if db.execute("SELECT COUNT(*) FROM recipes").fetchone()[0] == 0:
+                import_file = Path(__file__).with_name("recipe_import.json")
+                if import_file.exists():
+                    try:
+                        imported = json.loads(import_file.read_text(encoding="utf-8"))
+                        now = datetime.utcnow().isoformat()
+                        for recipe in imported:
+                            db.execute("INSERT INTO recipes(title, category, ingredients, recipe_text, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (recipe["title"], recipe["category"], json.dumps(recipe["ingredients"], ensure_ascii=False), recipe.get("recipe_text", ""), recipe.get("notes", ""), now, now))
+                    except (OSError, ValueError, KeyError):
+                        pass
+            db.execute("INSERT INTO app_settings(key, value) VALUES ('spreadsheet_recipes_imported_v1', '1')")
         if db.execute("SELECT COUNT(*) FROM recipes").fetchone()[0] == 0:
             now = datetime.utcnow().isoformat()
             demo = [
