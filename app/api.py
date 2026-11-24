@@ -102,12 +102,14 @@ def recipes(q: str = "", x_telegram_init_data: str | None = Header(default=None)
     user = current_user(x_telegram_init_data)
     with connect() as db:
         active_filter = "" if user["role"] == "admin" else " AND is_active = 1"
-        rows = db.execute(f"SELECT * FROM recipes WHERE (title LIKE ? OR ingredients LIKE ?){active_filter} ORDER BY sort_order, title", (f"%{q}%", f"%{q}%")).fetchall()
+        rows = db.execute(f"SELECT * FROM recipes WHERE 1=1{active_filter} ORDER BY sort_order, title").fetchall()
     result = []
     for row in rows:
         item = row_dict(row)
         item["ingredients"] = json.loads(item["ingredients"])
-        result.append(item)
+        haystack = f"{item['title']} {' '.join(item['ingredients'])}".casefold()
+        if q.casefold() in haystack:
+            result.append(item)
     return result
 
 
@@ -121,14 +123,14 @@ def schedule(x_telegram_init_data: str | None = Header(default=None)):
 
 @app.get("/api/calendar")
 def public_calendar(month: str = "", x_telegram_init_data: str | None = Header(default=None)):
-    approved_user(x_telegram_init_data)
+    user = approved_user(x_telegram_init_data)
     month = month or date.today().strftime("%Y-%m")
     try:
         datetime.strptime(month, "%Y-%m")
     except ValueError as exc:
         raise HTTPException(400, "Месяц должен быть в формате YYYY-MM") from exc
     with connect() as db:
-        rows = db.execute("SELECT s.work_date, s.user_id, u.full_name FROM schedules s JOIN users u ON u.id = s.user_id WHERE substr(s.work_date, 1, 7) = ? AND u.is_active = 1 AND u.status = 'approved' ORDER BY s.work_date, u.full_name", (month,)).fetchall()
+        rows = db.execute("SELECT s.work_date, s.user_id, u.full_name, CASE WHEN s.user_id = ? THEN 1 ELSE 0 END AS is_mine, CASE WHEN ? = 'admin' OR s.user_id = ? THEN h.hours ELSE NULL END AS confirmed_hours FROM schedules s JOIN users u ON u.id = s.user_id LEFT JOIN shift_hour_confirmations h ON h.user_id=s.user_id AND h.work_date=s.work_date AND h.status='approved' WHERE substr(s.work_date, 1, 7) = ? AND u.is_active = 1 AND u.status = 'approved' ORDER BY s.work_date, u.full_name", (user["id"], user["role"], user["id"], month)).fetchall()
     return [row_dict(row) for row in rows]
 
 
@@ -186,7 +188,7 @@ def admin_calendar(month: str = "", x_telegram_init_data: str | None = Header(de
     except ValueError as exc:
         raise HTTPException(400, "Месяц должен быть в формате YYYY-MM") from exc
     with connect() as db:
-        rows = db.execute("SELECT s.id, s.user_id, s.work_date, u.full_name FROM schedules s JOIN users u ON u.id = s.user_id WHERE substr(s.work_date, 1, 7) = ? ORDER BY s.work_date, u.full_name", (month,)).fetchall()
+        rows = db.execute("SELECT s.id, s.user_id, s.work_date, u.full_name, h.hours AS confirmed_hours FROM schedules s JOIN users u ON u.id = s.user_id LEFT JOIN shift_hour_confirmations h ON h.user_id=s.user_id AND h.work_date=s.work_date AND h.status='approved' WHERE substr(s.work_date, 1, 7) = ? ORDER BY s.work_date, u.full_name", (month,)).fetchall()
     return [row_dict(row) for row in rows]
 
 
@@ -284,6 +286,8 @@ async def process_day_off_api(request_id: int, payload: dict = Body(...), x_tele
         if not request:
             raise HTTPException(404, "Заявка не найдена")
         db.execute("UPDATE day_off_requests SET status=?, admin_comment=?, processed_at=? WHERE id=?", (status, payload.get("admin_comment", ""), datetime.utcnow().isoformat(), request_id))
+        if status == "approved":
+            db.execute("DELETE FROM schedules WHERE user_id = ? AND work_date = ?", (request["user_id"], request["request_date"]))
     if settings.bot_token:
         bot = Bot(settings.bot_token)
         try:
@@ -329,18 +333,71 @@ async def shift_swap(request_date: str = Form(...), target_user_id: int | None =
     except ValueError as exc:
         raise HTTPException(400, "Некорректная дата") from exc
     with connect() as db:
+        target = db.execute("SELECT * FROM users WHERE id = ? AND is_active=1 AND status='approved'", (target_user_id,)).fetchone() if target_user_id else None
         cursor = db.execute("INSERT INTO shift_swap_requests(requester_id, target_user_id, request_date, comment, created_at) VALUES (?, ?, ?, ?, ?)", (user["id"], target_user_id, request_date, comment, datetime.utcnow().isoformat()))
         request_id = cursor.lastrowid
+    if settings.bot_token:
+        bot = Bot(settings.bot_token)
+        try:
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"swap:approved:{request_id}"), InlineKeyboardButton(text="Отклонить", callback_data=f"swap:rejected:{request_id}")]])
+            for admin_id in settings.admin_ids:
+                try: await bot.send_message(admin_id, f"Заявка на обмен сменами\nОт: {user['full_name']}\nДата: {request_date}\nСотрудник: {target['full_name'] if target else 'не выбран'}\nКомментарий: {comment or '—'}", reply_markup=keyboard)
+                except Exception: logging.exception("Не удалось уведомить администратора %s об обмене %s", admin_id, request_id)
+            if target:
+                try: await bot.send_message(target["telegram_id"], f"Коллега {user['full_name']} предлагает обмен сменой на {request_date}. Комментарий: {comment or '—'}")
+                except Exception: logging.exception("Не удалось уведомить сотрудника %s об обмене %s", target["telegram_id"], request_id)
+            try: await bot.send_message(user["telegram_id"], f"Заявка на обмен сменами от {request_date} отправлена администратору.")
+            except Exception: logging.exception("Не удалось уведомить заявителя %s об обмене %s", user["telegram_id"], request_id)
+        except Exception:
+            logging.exception("Не удалось отправить уведомления по заявке на обмен %s", request_id)
+        finally:
+            await bot.session.close()
     return {"ok": True, "id": request_id}
+
+
+@app.post("/api/shift-hours")
+async def submit_shift_hours(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    user = approved_user(x_telegram_init_data)
+    try:
+        work_date = date.fromisoformat(str(payload.get("work_date", "")))
+        hours = float(payload.get("hours", 0))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, "Укажите дату и количество часов") from exc
+    if not 0 < hours <= 24:
+        raise HTTPException(400, "Часы должны быть от 0 до 24")
+    with connect() as db:
+        if not db.execute("SELECT 1 FROM schedules WHERE user_id=? AND work_date=?", (user["id"], work_date.isoformat())).fetchone():
+            raise HTTPException(400, "В графике нет назначенной смены на эту дату")
+        db.execute("INSERT INTO shift_hour_confirmations(user_id, work_date, hours, status, created_at, processed_at) VALUES (?, ?, ?, 'approved', ?, ?) ON CONFLICT(user_id, work_date) DO UPDATE SET hours=excluded.hours, status='approved', created_at=excluded.created_at, processed_at=excluded.processed_at", (user["id"], work_date.isoformat(), hours, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
+    return {"ok": True}
+
+
+@app.patch("/api/admin/shift-swaps/{request_id}")
+async def review_shift_swap(request_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    admin_user(x_telegram_init_data)
+    status = payload.get("status")
+    if status not in {"approved", "rejected"}: raise HTTPException(400, "Недопустимый статус")
+    with connect() as db:
+        row = db.execute("SELECT r.*, u.telegram_id AS requester_tg, u.full_name AS requester_name, t.telegram_id AS target_tg FROM shift_swap_requests r JOIN users u ON u.id=r.requester_id LEFT JOIN users t ON t.id=r.target_user_id WHERE r.id=?", (request_id,)).fetchone()
+        if not row: raise HTTPException(404, "Заявка не найдена")
+        if row["status"] != "pending": raise HTTPException(409, "Заявка уже обработана")
+        db.execute("UPDATE shift_swap_requests SET status=?, processed_at=? WHERE id=?", (status, datetime.utcnow().isoformat(), request_id))
+    if settings.bot_token:
+        bot=Bot(settings.bot_token)
+        try:
+            await bot.send_message(row["requester_tg"], f"Заявка на обмен сменами {row['request_date']} {'одобрена' if status == 'approved' else 'отклонена'} администратором.")
+            if row["target_tg"]: await bot.send_message(row["target_tg"], f"Обмен сменами на {row['request_date']} {'одобрен' if status == 'approved' else 'отклонён'} администратором.")
+        finally: await bot.session.close()
+    return {"ok": True}
 
 
 @app.post("/api/shifts")
 async def create_shift(cash_amount: float = Form(0), card_amount: float = Form(0), comment: str = Form(""), photo_types: str = Form("[]"), photos: list[UploadFile] = File(default=[]), x_telegram_init_data: str | None = Header(default=None)):
     user = approved_user(x_telegram_init_data)
-    required_photo_types = {"bar_station", "sink", "tea_surface", "coffee_station", "fridge_1", "fridge_2", "mini_fridge"}
+    required_photo_types = {"bar_station", "sink", "tea_surface", "coffee_station", "mini_fridge"}
     submitted_photo_types = set(json.loads(photo_types))
     if len(photos) != len(required_photo_types) or submitted_photo_types != required_photo_types:
-        raise HTTPException(400, "Нужно сделать все семь фотографий закрытия смены")
+        raise HTTPException(400, "Нужно сделать все пять фотографий закрытия смены")
     now = datetime.utcnow().isoformat()
     saved_paths: list[tuple[str, str]] = []
     with connect() as db:

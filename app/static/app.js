@@ -9,6 +9,7 @@ let adminUsers = [];
 let isAdmin = false;
 let currentRole = "";
 let calendarDate = new Date();
+let staffCalendarDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 let selectedCalendarDate = "";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
@@ -25,11 +26,11 @@ async function loadMe() {
     const response = await fetch("/api/me", { headers });
     if (!response.ok) throw new Error("auth");
     const user = await response.json();
-    currentRole = user.role || ""; if (currentRole === "waiter") { document.querySelectorAll("[data-closing-tab]").forEach((el) => el.hidden = true); document.querySelectorAll(".tab[data-page='shift']").forEach((el) => el.hidden = true); }
+    currentRole = user.role || ""; if (currentRole === "waiter") { document.querySelectorAll("[data-closing-tab], [data-page='shift']").forEach((el) => el.hidden = true); }
     $("#greeting").textContent = `Привет, ${user.full_name.split(" ")[0]}`;
     if (user.status !== "approved") { $("#onboarding").hidden = false; $("#home-content").hidden = true; $("#onboarding .muted").textContent = "Заполните анкету. Администратор подтвердит доступ в личном чате."; document.querySelectorAll(".tab:not([data-page='home']):not([data-page='recipes'])").forEach((tab) => tab.hidden = true); $("#onboarding-result").textContent = user.status === "pending" ? "Заявка уже отправлена. Дождитесь подтверждения администратора." : "Заполните анкету для доступа."; }
     if (user.role === "admin") { isAdmin = true; document.querySelectorAll(".admin-only").forEach((element) => element.classList.add("visible")); loadAdmin(); loadSupplierAdmin(); } loadOrders();
-  } catch { $("#greeting").textContent = "Барная смена"; }
+  } catch { $("#greeting").textContent = "Сотрудники заведения"; }
 }
 
 $("#onboarding-form")?.addEventListener("submit", async (event) => {
@@ -99,7 +100,7 @@ $("#shift-form").addEventListener("submit", async (event) => {
   const form = event.currentTarget;
   const inputs = [...form.querySelectorAll('input[type="file"]')];
   const files = inputs.flatMap((input) => [...input.files]);
-  if (files.length !== inputs.length) { notify("Сделайте все семь фотографий закрытия смены."); return; }
+  if (files.length !== inputs.length) { notify("Сделайте все пять фотографий закрытия смены."); return; }
   const data = new FormData(); data.append("comment", form.comment.value); data.append("photo_types", JSON.stringify(inputs.map((input) => input.dataset.photoType))); files.forEach((file) => data.append("photos", file));
   const button = form.querySelector("button[type=submit]"); button.disabled = true; button.textContent = "Отправляем…";
   try { const response = await fetch("/api/shifts", { method: "POST", headers, body: data }); if (!response.ok) throw new Error(); $("#shift-result").textContent = "Отчёт сохранён и отправлен администратору."; form.reset(); document.querySelectorAll(".photo-slot").forEach((slot) => slot.classList.remove("has-photo")); }
@@ -108,25 +109,27 @@ $("#shift-form").addEventListener("submit", async (event) => {
 document.querySelectorAll('#shift-form input[type="file"]').forEach((input) => input.addEventListener("change", () => input.closest(".photo-slot").classList.toggle("has-photo", input.files.length > 0)));
 
 async function loadSchedule() {
-  const response = await fetch("/api/schedule", { headers }); if (!response.ok) return;
-  const rows = await response.json();
-  const month = new Date();
-  const calendarResponse = await fetch(`/api/calendar?month=${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, "0")}`, { headers });
-  const calendarRows = calendarResponse.ok ? await calendarResponse.json() : [];
-  renderStaffCalendar(calendarRows, rows);
-  const staffResponse = await fetch("/api/staff", { headers }); if (staffResponse.ok) { const staff = await staffResponse.json(); $("#swap-user").innerHTML = '<option value="">Выберите сотрудника</option>' + staff.map((user) => `<option value="${user.id}">${escapeHtml(user.full_name)}</option>`).join(""); }
+  await refreshStaffCalendar();
+  const staffResponse = await fetch("/api/staff", { headers });
+  if (staffResponse.ok) { const staff = await staffResponse.json(); $("#swap-user").innerHTML = '<option value="">Выберите сотрудника</option>' + staff.map((user) => `<option value="${user.id}">${escapeHtml(user.full_name)}</option>`).join(""); }
 }
-
-function renderStaffCalendar(rows, ownRows) {
-  const month = new Date(); const year = month.getFullYear(); const monthIndex = month.getMonth(); const first = new Date(year, monthIndex, 1); const days = new Date(year, monthIndex + 1, 0).getDate(); const ownDates = new Set(ownRows.map((row) => row.work_date));
+async function refreshStaffCalendar() {
+  const monthKey = `${staffCalendarDate.getFullYear()}-${String(staffCalendarDate.getMonth()+1).padStart(2,"0")}`;
+  const response = await fetch(`/api/calendar?month=${monthKey}`, { headers });
+  if (response.ok) renderStaffCalendar(await response.json());
+}
+function renderStaffCalendar(rows) {
+  const year = staffCalendarDate.getFullYear(); const monthIndex = staffCalendarDate.getMonth(); const first = new Date(year, monthIndex, 1); const days = new Date(year, monthIndex + 1, 0).getDate();
   const byDate = rows.reduce((map, row) => ((map[row.work_date] ||= []).push(row), map), {});
-  let html = `<div class="staff-calendar-head"><b>${month.toLocaleDateString("ru-RU", { month: "long", year: "numeric" })}</b></div><div class="staff-calendar-grid">${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((day) => `<span class="calendar-weekday">${day}</span>`).join("")}`;
+  let html = `<div class="staff-calendar-head"><button class="mini-button" id="staff-calendar-prev" type="button">‹</button><b>${staffCalendarDate.toLocaleDateString("ru-RU", { month: "long", year: "numeric" })}</b><button class="mini-button" id="staff-calendar-next" type="button">›</button></div><div class="staff-calendar-grid">${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((day, i) => `<span class="calendar-weekday ${i===4||i===5?"cash-day":""}">${day}</span>`).join("")}`;
   const offset = (first.getDay() + 6) % 7; for (let i = 0; i < offset; i += 1) html += '<span class="calendar-empty"></span>';
-  for (let day = 1; day <= days; day += 1) { const key = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`; html += `<button class="calendar-day ${ownDates.has(key) ? "my-shift" : ""}" data-staff-date="${key}"><b>${day}</b><small>${byDate[key]?.length || 0} чел.</small></button>`; }
-  html += "</div><p id=\"staff-calendar-detail\" class=\"result\"></p>";
-  $("#schedule-list").innerHTML = html;
-  document.querySelectorAll("[data-staff-date]").forEach((button) => button.addEventListener("click", () => { const people = byDate[button.dataset.staffDate] || []; $("#staff-calendar-detail").textContent = people.length ? `${button.dataset.staffDate}: ${people.map((person) => person.full_name).join(", ")}` : `${button.dataset.staffDate}: смена не назначена`; }));
+  for (let day = 1; day <= days; day += 1) { const key = `${year}-${String(monthIndex + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`; const weekday = new Date(year,monthIndex,day).getDay(); html += `<button class="calendar-day ${byDate[key]?.some(x=>x.is_mine)?"my-shift":""} ${weekday===5||weekday===6?"cash-day":""}" data-staff-date="${key}"><b>${day}</b><small>${byDate[key]?.length || 0} чел.</small></button>`; }
+  html += `</div><p id="staff-calendar-detail" class="result"></p>`; $("#schedule-list").innerHTML = html;
+  $("#staff-calendar-prev").addEventListener("click", async()=>{staffCalendarDate.setMonth(staffCalendarDate.getMonth()-1);await refreshStaffCalendar();});
+  $("#staff-calendar-next").addEventListener("click", async()=>{staffCalendarDate.setMonth(staffCalendarDate.getMonth()+1);await refreshStaffCalendar();});
+  document.querySelectorAll("[data-staff-date]").forEach((button) => button.addEventListener("click", () => { const people = byDate[button.dataset.staffDate] || []; $("#staff-calendar-detail").textContent = people.length ? `${button.dataset.staffDate}: ${people.map((person) => `${person.full_name}${person.confirmed_hours ? ` — ${person.confirmed_hours} ч.` : ""}`).join(", ")}` : `${button.dataset.staffDate}: смена не назначена`; }));
 }
+$("#shift-hours-form")?.addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); const response = await fetch("/api/shift-hours", { method:"POST", headers:{...headers,"Content-Type":"application/json"}, body:JSON.stringify({work_date:form.get("work_date"),hours:form.get("hours")}) }); $("#shift-hours-result").textContent = response.ok ? "Часы сохранены и сразу отображаются в графике." : ((await response.json().catch(()=>({}))).detail || "Не удалось сохранить часы."); if(response.ok){event.currentTarget.reset();await refreshStaffCalendar();} });
 
 async function loadStaff() {
   const response = await fetch("/api/staff", { headers });
@@ -146,7 +149,7 @@ async function loadStaff() {
 
 $("#staff-refresh")?.addEventListener("click", loadStaff);
 $("#day-off-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/day-off", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#day-off-result").textContent = response.ok ? "Заявка отправлена администратору." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
-$("#swap-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/shift-swap", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#swap-result").textContent = response.ok ? "Заявка на обмен отправлена." : "Не удалось отправить заявку."; if (response.ok) event.currentTarget.reset(); });
+$("#swap-form").addEventListener("submit", async (event) => { event.preventDefault(); const response = await fetch("/api/shift-swap", { method: "POST", headers, body: new FormData(event.currentTarget) }); $("#swap-result").textContent = response.ok ? "Заявка отправлена администратору и выбранному сотруднику. Вам придёт уведомление." : ((await response.json().catch(()=>({}))).detail || "Не удалось отправить заявку."); if (response.ok) event.currentTarget.reset(); });
 document.querySelectorAll('#schedule input[type="date"]').forEach((input) => { input.setAttribute("aria-label", "Выберите дату"); input.title = "Выберите дату"; const hint = document.createElement("span"); hint.className = "date-hint"; hint.textContent = "Выберите дату"; input.parentElement?.insertBefore(hint, input); });
 
 async function adminRequest(url, options = {}) { const response = await fetch(url, { ...options, headers: { ...headers, "Content-Type": "application/json", ...(options.headers || {}) } }); if (!response.ok) throw new Error(await response.text()); return response.json(); }
@@ -156,7 +159,7 @@ async function loadAdmin() {
     const data = await adminRequest("/api/admin/overview"); window.adminDirectory = data.users; adminRecipes = data.recipes; adminUsers = data.users.filter((user) => user.role !== "admin");
     const staffPanel = $("#admin-staff"); if (staffPanel) staffPanel.innerHTML = data.users.map((user) => `<button class="staff-card" data-admin-staff-id="${user.id}"><span class="staff-avatar">${escapeHtml(user.full_name.slice(0, 1).toUpperCase())}</span><span><b>${escapeHtml(user.full_name)}</b><small>${escapeHtml({ admin: "Администратор", waiter: "Официант", bartender: "Бармен" }[user.role] || user.role)}</small></span><span class="staff-arrow">›</span></button>`).join("");
     $("#admin-requests").innerHTML = data.requests.map((request) => `<div class="admin-row"><div><b>${escapeHtml(request.full_name)}</b><small>${escapeHtml(request.request_date)} · ${escapeHtml(request.status)}</small></div>${request.status === "pending" ? `<div class="row-actions"><button class="mini-button" data-request="${request.id}" data-status="approved">Одобрить</button><button class="mini-button danger" data-request="${request.id}" data-status="rejected">Отклонить</button></div>` : ""}</div>`).join("") || '<p class="muted">Заявок нет.</p>';
-    $("#admin-swaps").innerHTML = data.swaps.map((swap) => `<div class="admin-row"><div><b>${escapeHtml(swap.requester_name)}</b><small>${escapeHtml(swap.request_date)}${swap.target_name ? ` · обмен с ${escapeHtml(swap.target_name)}` : ""} · ${escapeHtml(swap.status)}</small></div></div>`).join("") || '<p class="muted">Заявок на обмен пока нет.</p>';
+    $("#admin-swaps").innerHTML = data.swaps.map((swap) => `<div class="admin-row"><div><b>${escapeHtml(swap.requester_name)}</b><small>${escapeHtml(swap.request_date)}${swap.target_name ? ` · обмен с ${escapeHtml(swap.target_name)}` : ""} · ${escapeHtml(swap.comment || "")} · ${escapeHtml(swap.status)}</small></div>${swap.status === "pending" ? `<div class="row-actions"><button class="mini-button" data-swap-request="${swap.id}" data-status="approved">Одобрить</button><button class="mini-button danger" data-swap-request="${swap.id}" data-status="rejected">Отклонить</button></div>` : ""}</div>`).join("") || '<p class="muted">Заявок на обмен пока нет.</p>';
     $("#admin-shifts").innerHTML = data.shifts.map((shift) => `<div class="admin-row"><div><b>${escapeHtml(shift.full_name)}</b><small>${escapeHtml(shift.report_date)} · ${escapeHtml(shift.status)}</small></div><select class="status-select" data-shift="${shift.id}"><option value="submitted" ${shift.status === "submitted" ? "selected" : ""}>Новый</option><option value="reviewed" ${shift.status === "reviewed" ? "selected" : ""}>Проверен</option><option value="needs_attention" ${shift.status === "needs_attention" ? "selected" : ""}>Есть замечания</option></select></div>`).join("") || '<p class="muted">Отчётов нет.</p>';
     renderCalendar(await adminRequest(`/api/admin/calendar?month=${monthKey()}`));
     loadRecipes($("#recipe-search").value);
@@ -173,7 +176,7 @@ function renderCalendar(schedules = []) {
   for (let day = 1; day <= days; day += 1) { const key = `${monthKey()}-${String(day).padStart(2, "0")}`; html += `<button class="calendar-day ${byDate[key]?.length ? "has-shifts" : ""} ${selectedCalendarDate === key ? "selected" : ""}" data-calendar-date="${key}"><b>${day}</b><small>${byDate[key]?.length || 0} чел.</small></button>`; }
   $("#admin-calendar").innerHTML = html;
 }
-async function openCalendarDay(day) { selectedCalendarDate = day; const schedules = await adminRequest(`/api/admin/calendar?month=${monthKey()}`); renderCalendar(schedules); const assigned = new Set(schedules.filter((row) => row.work_date === day).map((row) => row.user_id)); $("#calendar-editor").hidden = false; $("#calendar-selected-date").textContent = new Date(`${day}T00:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long" }); $("#calendar-user-list").innerHTML = adminUsers.map((user) => `<label class="user-check"><input type="checkbox" value="${user.id}" ${assigned.has(user.id) ? "checked" : ""}><span>${escapeHtml(user.full_name)}</span></label>`).join(""); }
+async function openCalendarDay(day) { selectedCalendarDate = day; const schedules = await adminRequest(`/api/admin/calendar?month=${monthKey()}`); renderCalendar(schedules); const assignedRows = schedules.filter((row) => row.work_date === day); const assigned = new Set(assignedRows.map((row) => row.user_id)); const confirmedHours = new Map(assignedRows.filter((row) => row.confirmed_hours).map((row) => [row.user_id, row.confirmed_hours])); $("#calendar-editor").hidden = false; $("#calendar-selected-date").textContent = new Date(`${day}T00:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long" }); $("#calendar-user-list").innerHTML = adminUsers.map((user) => `<label class="user-check"><input type="checkbox" value="${user.id}" ${assigned.has(user.id) ? "checked" : ""}><span>${escapeHtml(user.full_name)}${confirmedHours.has(user.id) ? ` · ${confirmedHours.get(user.id)} ч.` : ""}</span></label>`).join(""); }
 
 $("#admin-calendar").addEventListener("click", (event) => { const day = event.target.closest("[data-calendar-date]"); if (day) openCalendarDay(day.dataset.calendarDate); });
 $("#calendar-prev").addEventListener("click", () => { calendarDate.setMonth(calendarDate.getMonth() - 1); loadAdmin(); });
@@ -183,7 +186,7 @@ $("#calendar-save").addEventListener("click", async () => { const user_ids = [..
 async function editRecipe(id) { const recipe = adminRecipes.find((item) => item.id === id); if (!recipe) return; const tile = document.querySelector(`[data-recipe-id="${id}"]`); showRecipe(recipe, tile); renderRecipeEditor(recipe, tile); }
 
 $("#admin-refresh")?.addEventListener("click", loadAdmin);
-document.addEventListener("click", async (event) => { const target = event.target.closest("button"); if (!target || target.closest("[data-recipe-detail]")) return; if (target.dataset.request) { try { await adminRequest(`/api/admin/day-off/${target.dataset.request}`, { method: "PATCH", body: JSON.stringify({ status: target.dataset.status }) }); loadAdmin(); } catch { $("#admin-result").textContent = "Не удалось обработать заявку."; } } if (target.dataset.deleteRecipe) { try { await adminRequest(`/api/admin/recipes/${target.dataset.deleteRecipe}`, { method: "DELETE" }); loadAdmin(); loadRecipes(); } catch { $("#admin-result").textContent = "Не удалось удалить техкарту."; } } if (target.dataset.editRecipe) editRecipe(Number(target.dataset.editRecipe)); });
+document.addEventListener("click", async (event) => { const target = event.target.closest("button"); if (!target || target.closest("[data-recipe-detail]")) return; if (target.dataset.swapRequest) { try { await adminRequest(`/api/admin/shift-swaps/${target.dataset.swapRequest}`, { method: "PATCH", body: JSON.stringify({ status: target.dataset.status }) }); loadAdmin(); } catch { $("#admin-result").textContent = "Не удалось обработать обмен сменами."; } } if (target.dataset.request) { try { await adminRequest(`/api/admin/day-off/${target.dataset.request}`, { method: "PATCH", body: JSON.stringify({ status: target.dataset.status }) }); loadAdmin(); } catch { $("#admin-result").textContent = "Не удалось обработать заявку."; } } if (target.dataset.deleteRecipe) { try { await adminRequest(`/api/admin/recipes/${target.dataset.deleteRecipe}`, { method: "DELETE" }); loadAdmin(); loadRecipes(); } catch { $("#admin-result").textContent = "Не удалось удалить техкарту."; } } if (target.dataset.editRecipe) editRecipe(Number(target.dataset.editRecipe)); });
 document.addEventListener("click", async (event) => { const target = event.target.closest("[data-admin-staff-id]"); if (!target) return; const user = (window.adminDirectory || []).find((item) => item.id === Number(target.dataset.adminStaffId)); if (!user) return; const answer = window.prompt("Роль: admin, waiter, bartender или none для полного снятия доступа", user.role || "none"); if (answer === null) return; const normalized = answer.trim().toLowerCase(); const role = normalized === "none" ? null : normalized; if (role !== null && !["admin", "waiter", "bartender"].includes(role)) return; try { await adminRequest(`/api/admin/users/${user.id}/role`, { method: "PATCH", body: JSON.stringify({ role }) }); loadAdmin(); loadStaff(); } catch { $("#admin-result").textContent = "Не удалось изменить роль."; } });
 document.addEventListener("change", async (event) => { const target = event.target; if (target.dataset.supplierToggle || target.dataset.supplierItemToggle) { const item = Boolean(target.dataset.supplierItemToggle); const id = target.dataset.supplierToggle || target.dataset.supplierItemToggle; const base = item ? "supplier-items" : "suppliers"; try { await adminRequest(`/api/admin/${base}/${id}`, { method: "PATCH", body: JSON.stringify({ is_active: target.checked }) }); loadSupplierAdmin(); } catch { target.checked = !target.checked; notify("Не удалось изменить статус."); } return; } if (target.dataset.shift) { try { await adminRequest(`/api/admin/shifts/${target.dataset.shift}`, { method: "PATCH", body: JSON.stringify({ status: target.value }) }); } catch { $("#admin-result").textContent = "Не удалось обновить отчёт."; } } });
 

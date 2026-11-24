@@ -22,7 +22,7 @@ def mini_app_keyboard() -> InlineKeyboardMarkup:
 async def start(message: Message) -> None:
     if message.from_user.id in settings.admin_ids:
         upsert_user(message.from_user.id, message.from_user.full_name, "admin", message.from_user.username or "")
-        await message.answer("Барная смена на связи. Откройте приложение:", reply_markup=mini_app_keyboard())
+        await message.answer("Приложение сотрудников заведения. Откройте приложение:", reply_markup=mini_app_keyboard())
         await send_pending_access_requests(message.bot, message.from_user.id)
     else:
         url = f"{settings.mini_app_url}{'&' if '?' in settings.mini_app_url else '?'}v=14"
@@ -93,6 +93,29 @@ async def process_day_off(callback: CallbackQuery) -> None:
     await callback.message.edit_text(f"Заявка на {request['request_date']} {label}.")
     if settings.bot_token:
         await callback.bot.send_message(request["telegram_id"], f"Заявка на выходной {request['request_date']} {label} администратором.")
+    await callback.answer("Готово")
+
+
+@router.callback_query(F.data.startswith("swap:"))
+async def process_shift_swap(callback: CallbackQuery) -> None:
+    if callback.from_user.id not in settings.admin_ids:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    _, status, request_id = callback.data.split(":")
+    if status not in {"approved", "rejected"}:
+        await callback.answer("Недопустимое действие", show_alert=True)
+        return
+    with connect() as db:
+        row = db.execute("SELECT r.*, u.telegram_id AS requester_tg, t.telegram_id AS target_tg FROM shift_swap_requests r JOIN users u ON u.id=r.requester_id LEFT JOIN users t ON t.id=r.target_user_id WHERE r.id=?", (int(request_id),)).fetchone()
+        if not row or row["status"] != "pending":
+            await callback.answer("Заявка уже обработана", show_alert=True)
+            return
+        db.execute("UPDATE shift_swap_requests SET status=?, processed_at=? WHERE id=?", (status, __import__("datetime").datetime.utcnow().isoformat(), int(request_id)))
+    verb = "одобрена" if status == "approved" else "отклонена"
+    await callback.message.edit_text(f"Заявка на обмен от {row['request_date']} {verb}.")
+    await callback.bot.send_message(row["requester_tg"], f"Заявка на обмен сменами {row['request_date']} {verb} администратором.")
+    if row["target_tg"]:
+        await callback.bot.send_message(row["target_tg"], f"Обмен сменами на {row['request_date']} {verb} администратором.")
     await callback.answer("Готово")
 
 
