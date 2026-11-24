@@ -334,19 +334,23 @@ async def shift_swap(request_date: str = Form(...), target_user_id: int | None =
         raise HTTPException(400, "Некорректная дата") from exc
     with connect() as db:
         target = db.execute("SELECT * FROM users WHERE id = ? AND is_active=1 AND status='approved'", (target_user_id,)).fetchone() if target_user_id else None
+        if not target:
+            raise HTTPException(400, "Выберите сотрудника для обмена")
+        if target["id"] == user["id"]:
+            raise HTTPException(400, "Нельзя отправить заявку самому себе")
+        if not db.execute("SELECT 1 FROM schedules WHERE user_id=? AND work_date=?", (user["id"], request_date)).fetchone():
+            raise HTTPException(400, "На выбранную дату у вас нет смены в графике")
+        if db.execute("SELECT 1 FROM schedules WHERE user_id=? AND work_date=?", (target["id"], request_date)).fetchone():
+            raise HTTPException(400, "Выбранный сотрудник уже стоит в графике на эту дату")
         cursor = db.execute("INSERT INTO shift_swap_requests(requester_id, target_user_id, request_date, comment, created_at) VALUES (?, ?, ?, ?, ?)", (user["id"], target_user_id, request_date, comment, datetime.utcnow().isoformat()))
         request_id = cursor.lastrowid
     if settings.bot_token:
         bot = Bot(settings.bot_token)
         try:
-            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"swap:approved:{request_id}"), InlineKeyboardButton(text="Отклонить", callback_data=f"swap:rejected:{request_id}")]])
-            for admin_id in settings.admin_ids:
-                try: await bot.send_message(admin_id, f"Заявка на обмен сменами\nОт: {user['full_name']}\nДата: {request_date}\nСотрудник: {target['full_name'] if target else 'не выбран'}\nКомментарий: {comment or '—'}", reply_markup=keyboard)
-                except Exception: logging.exception("Не удалось уведомить администратора %s об обмене %s", admin_id, request_id)
-            if target:
-                try: await bot.send_message(target["telegram_id"], f"Коллега {user['full_name']} предлагает обмен сменой на {request_date}. Комментарий: {comment or '—'}")
-                except Exception: logging.exception("Не удалось уведомить сотрудника %s об обмене %s", target["telegram_id"], request_id)
-            try: await bot.send_message(user["telegram_id"], f"Заявка на обмен сменами от {request_date} отправлена администратору.")
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Принять смену", callback_data=f"swap:approved:{request_id}"), InlineKeyboardButton(text="Отклонить", callback_data=f"swap:rejected:{request_id}")]])
+            try: await bot.send_message(target["telegram_id"], f"Сотрудник {user['full_name']} предлагает передать вам смену на {request_date}. Комментарий: {comment or '—'}", reply_markup=keyboard)
+            except Exception: logging.exception("Не удалось уведомить сотрудника %s об обмене %s", target["telegram_id"], request_id)
+            try: await bot.send_message(user["telegram_id"], f"Заявка на обмен сменами от {request_date} отправлена сотруднику {target['full_name']}.")
             except Exception: logging.exception("Не удалось уведомить заявителя %s об обмене %s", user["telegram_id"], request_id)
         except Exception:
             logging.exception("Не удалось отправить уведомления по заявке на обмен %s", request_id)
@@ -369,25 +373,6 @@ async def submit_shift_hours(payload: dict = Body(...), x_telegram_init_data: st
         if not db.execute("SELECT 1 FROM schedules WHERE user_id=? AND work_date=?", (user["id"], work_date.isoformat())).fetchone():
             raise HTTPException(400, "В графике нет назначенной смены на эту дату")
         db.execute("INSERT INTO shift_hour_confirmations(user_id, work_date, hours, status, created_at, processed_at) VALUES (?, ?, ?, 'approved', ?, ?) ON CONFLICT(user_id, work_date) DO UPDATE SET hours=excluded.hours, status='approved', created_at=excluded.created_at, processed_at=excluded.processed_at", (user["id"], work_date.isoformat(), hours, datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
-    return {"ok": True}
-
-
-@app.patch("/api/admin/shift-swaps/{request_id}")
-async def review_shift_swap(request_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
-    admin_user(x_telegram_init_data)
-    status = payload.get("status")
-    if status not in {"approved", "rejected"}: raise HTTPException(400, "Недопустимый статус")
-    with connect() as db:
-        row = db.execute("SELECT r.*, u.telegram_id AS requester_tg, u.full_name AS requester_name, t.telegram_id AS target_tg FROM shift_swap_requests r JOIN users u ON u.id=r.requester_id LEFT JOIN users t ON t.id=r.target_user_id WHERE r.id=?", (request_id,)).fetchone()
-        if not row: raise HTTPException(404, "Заявка не найдена")
-        if row["status"] != "pending": raise HTTPException(409, "Заявка уже обработана")
-        db.execute("UPDATE shift_swap_requests SET status=?, processed_at=? WHERE id=?", (status, datetime.utcnow().isoformat(), request_id))
-    if settings.bot_token:
-        bot=Bot(settings.bot_token)
-        try:
-            await bot.send_message(row["requester_tg"], f"Заявка на обмен сменами {row['request_date']} {'одобрена' if status == 'approved' else 'отклонена'} администратором.")
-            if row["target_tg"]: await bot.send_message(row["target_tg"], f"Обмен сменами на {row['request_date']} {'одобрен' if status == 'approved' else 'отклонён'} администратором.")
-        finally: await bot.session.close()
     return {"ok": True}
 
 

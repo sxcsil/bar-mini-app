@@ -98,24 +98,30 @@ async def process_day_off(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("swap:"))
 async def process_shift_swap(callback: CallbackQuery) -> None:
-    if callback.from_user.id not in settings.admin_ids:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
     _, status, request_id = callback.data.split(":")
     if status not in {"approved", "rejected"}:
         await callback.answer("Недопустимое действие", show_alert=True)
         return
     with connect() as db:
-        row = db.execute("SELECT r.*, u.telegram_id AS requester_tg, t.telegram_id AS target_tg FROM shift_swap_requests r JOIN users u ON u.id=r.requester_id LEFT JOIN users t ON t.id=r.target_user_id WHERE r.id=?", (int(request_id),)).fetchone()
+        row = db.execute("SELECT r.*, u.telegram_id AS requester_tg, u.full_name AS requester_name, t.telegram_id AS target_tg FROM shift_swap_requests r JOIN users u ON u.id=r.requester_id LEFT JOIN users t ON t.id=r.target_user_id WHERE r.id=?", (int(request_id),)).fetchone()
         if not row or row["status"] != "pending":
             await callback.answer("Заявка уже обработана", show_alert=True)
             return
+        if callback.from_user.id != row["target_tg"]:
+            await callback.answer("Ответить на обмен может только выбранный сотрудник", show_alert=True)
+            return
+        if status == "approved":
+            shift = db.execute("SELECT shift_type FROM schedules WHERE user_id=? AND work_date=?", (row["requester_id"], row["request_date"])).fetchone()
+            if not shift:
+                await callback.answer("Эта смена уже отсутствует в графике", show_alert=True)
+                return
+            db.execute("DELETE FROM schedules WHERE user_id=? AND work_date=?", (row["requester_id"], row["request_date"]))
+            db.execute("DELETE FROM shift_hour_confirmations WHERE user_id=? AND work_date=?", (row["requester_id"], row["request_date"]))
+            db.execute("INSERT INTO schedules(user_id, work_date, shift_type, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(user_id, work_date) DO UPDATE SET shift_type=excluded.shift_type", (row["target_user_id"], row["request_date"], shift["shift_type"], __import__("datetime").datetime.utcnow().isoformat()))
         db.execute("UPDATE shift_swap_requests SET status=?, processed_at=? WHERE id=?", (status, __import__("datetime").datetime.utcnow().isoformat(), int(request_id)))
-    verb = "одобрена" if status == "approved" else "отклонена"
-    await callback.message.edit_text(f"Заявка на обмен от {row['request_date']} {verb}.")
-    await callback.bot.send_message(row["requester_tg"], f"Заявка на обмен сменами {row['request_date']} {verb} администратором.")
-    if row["target_tg"]:
-        await callback.bot.send_message(row["target_tg"], f"Обмен сменами на {row['request_date']} {verb} администратором.")
+    verb = "принята" if status == "approved" else "отклонена"
+    await callback.message.edit_text(f"Заявка от {row['requester_name']} на смену {row['request_date']} {verb}.")
+    await callback.bot.send_message(row["requester_tg"], f"Сотрудник {callback.from_user.full_name} {verb} предложение по смене на {row['request_date']}.")
     await callback.answer("Готово")
 
 
