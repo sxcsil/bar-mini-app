@@ -11,7 +11,7 @@ from aiogram import Bot
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from .config import settings
-from .db import connect, create_pending_user, init_db, row_dict, upsert_user, user_by_telegram_id
+from .db import claim_action, connect, create_pending_user, init_db, row_dict, upsert_user, user_by_telegram_id
 from .security import validate_init_data
 
 app = FastAPI(title="Bar Mini App API")
@@ -61,6 +61,50 @@ def admin_user(init_data: str | None):
     return user
 
 
+def reservation_calendar(month: str, x_telegram_init_data: str | None):
+    approved_user(x_telegram_init_data)
+    month = month or date.today().strftime("%Y-%m")
+    try:
+        datetime.strptime(month, "%Y-%m")
+    except ValueError as exc:
+        raise HTTPException(400, "Месяц должен быть в формате YYYY-MM") from exc
+    with connect() as db:
+        rows = db.execute("SELECT r.*, u.full_name AS created_by FROM reservations r JOIN users u ON u.id=r.user_id WHERE substr(r.reservation_date,1,7)=? ORDER BY r.reservation_date,r.reservation_time,r.id", (month,)).fetchall()
+    return [row_dict(row) for row in rows]
+
+
+@app.get("/api/reservations")
+def get_reservations(month: str = "", x_telegram_init_data: str | None = Header(default=None)):
+    return reservation_calendar(month, x_telegram_init_data)
+
+
+@app.post("/api/reservations")
+def add_reservation(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    user = approved_user(x_telegram_init_data)
+    try:
+        booking_date = date.fromisoformat(str(payload.get("reservation_date", "")))
+        booking_time = datetime.strptime(str(payload.get("reservation_time", "")), "%H:%M").time()
+    except ValueError as exc:
+        raise HTTPException(400, "Укажите дату и время брони") from exc
+    guest_name = str(payload.get("guest_name", "")).strip()
+    if not guest_name:
+        raise HTTPException(400, "Укажите имя")
+    if not claim_action(user["id"], "reservation", 5):
+        raise HTTPException(429, "Подождите 5 секунд перед добавлением брони")
+    guest_count = payload.get("guest_count")
+    try:
+        guest_count = int(guest_count) if guest_count not in (None, "") else None
+        if guest_count is not None and guest_count < 1:
+            raise ValueError
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, "Количество гостей должно быть положительным числом") from exc
+    fee = payload.get("service_fee")
+    fee = None if fee in (None, "") else (1 if str(fee).lower() in {"1", "true", "yes", "да"} else 0)
+    with connect() as db:
+        cursor = db.execute("INSERT INTO reservations(user_id,reservation_date,reservation_time,guest_name,guest_count,phone,table_name,service_fee,created_at) VALUES (?,?,?,?,?,?,?,?,?)", (user["id"], booking_date.isoformat(), booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, datetime.utcnow().isoformat()))
+    return {"ok": True, "id": cursor.lastrowid}
+
+
 @app.get("/api/me")
 def me(x_telegram_init_data: str | None = Header(default=None)):
     return row_dict(current_user(x_telegram_init_data))
@@ -77,8 +121,10 @@ async def onboarding(payload: dict = Body(...), x_telegram_init_data: str | None
     role = payload.get("role")
     if not full_name or role not in {"waiter", "bartender", "admin"}:
         raise HTTPException(400, "Заполните ФИО и роль")
-    if existing and existing["status"] == "pending" and str(existing["created_at"] or "")[:10] == date.today().isoformat():
-        return {**row_dict(existing), "notification_sent": False, "already_submitted": True}
+    if existing and existing["status"] == "approved":
+        raise HTTPException(409, "Доступ уже одобрен")
+    if existing and not claim_action(existing["id"], "onboarding", 3600):
+        raise HTTPException(429, "Повторно отправить заявку можно через час")
     user = create_pending_user(telegram_id, full_name, "", role, str(telegram_user.get("username") or ""))
     notification_sent = False
     if settings.bot_token and settings.admin_ids:
@@ -148,8 +194,8 @@ def admin_overview(x_telegram_init_data: str | None = Header(default=None)):
     with connect() as db:
         recipes = db.execute("SELECT * FROM recipes ORDER BY is_active DESC, sort_order, title").fetchall()
         users = db.execute("SELECT id, telegram_id, full_name, role, is_active, created_at FROM users ORDER BY CASE role WHEN 'admin' THEN 1 WHEN 'waiter' THEN 2 WHEN 'bartender' THEN 3 ELSE 4 END, full_name").fetchall()
-        requests = db.execute("SELECT r.*, u.full_name FROM day_off_requests r JOIN users u ON u.id = r.user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
-        swaps = db.execute("SELECT r.*, u.full_name AS requester_name, t.full_name AS target_name FROM shift_swap_requests r JOIN users u ON u.id = r.requester_id LEFT JOIN users t ON t.id = r.target_user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
+        requests = db.execute("SELECT r.*, u.full_name FROM day_off_requests r JOIN users u ON u.id = r.user_id ORDER BY r.created_at DESC").fetchall()
+        swaps = db.execute("SELECT r.*, u.full_name AS requester_name, t.full_name AS target_name FROM shift_swap_requests r JOIN users u ON u.id = r.requester_id LEFT JOIN users t ON t.id = r.target_user_id ORDER BY r.created_at DESC").fetchall()
         shifts = db.execute("SELECT s.*, u.full_name FROM shifts s JOIN users u ON u.id = s.user_id ORDER BY s.created_at DESC LIMIT 50").fetchall()
         schedules = db.execute("SELECT s.*, u.full_name FROM schedules s JOIN users u ON u.id = s.user_id WHERE s.work_date >= date('now', '-7 day') ORDER BY s.work_date, u.full_name").fetchall()
     recipe_items = []
@@ -287,11 +333,14 @@ async def process_day_off_api(request_id: int, payload: dict = Body(...), x_tele
             raise HTTPException(404, "Заявка не найдена")
         db.execute("UPDATE day_off_requests SET status=?, admin_comment=?, processed_at=? WHERE id=?", (status, payload.get("admin_comment", ""), datetime.utcnow().isoformat(), request_id))
         if status == "approved":
-            db.execute("DELETE FROM schedules WHERE user_id = ? AND work_date = ?", (request["user_id"], request["request_date"]))
+            end_date = request["request_end_date"] or request["request_date"]
+            db.execute("DELETE FROM schedules WHERE user_id = ? AND work_date BETWEEN ? AND ?", (request["user_id"], request["request_date"], end_date))
     if settings.bot_token:
         bot = Bot(settings.bot_token)
         try:
-            await bot.send_message(request["telegram_id"], f"Заявка на выходной {request['request_date']} {'одобрена' if status == 'approved' else 'отклонена'}.")
+            end_date = request["request_end_date"] or request["request_date"]
+            date_label = request["request_date"] if end_date == request["request_date"] else f"{request['request_date']} — {end_date}"
+            await bot.send_message(request["telegram_id"], f"Заявка на выходной {date_label} {'одобрена' if status == 'approved' else 'отклонена'}.")
         finally:
             await bot.session.close()
     return {"ok": True}
@@ -309,17 +358,26 @@ def review_shift(shift_id: int, payload: dict = Body(...), x_telegram_init_data:
 
 
 @app.post("/api/day-off")
-async def day_off(request_date: str = Form(...), x_telegram_init_data: str | None = Header(default=None)):
+async def day_off(request_date: str = Form(...), request_end_date: str = Form(""), x_telegram_init_data: str | None = Header(default=None)):
     user = approved_user(x_telegram_init_data)
+    try:
+        start = date.fromisoformat(request_date)
+        end = date.fromisoformat(request_end_date) if request_end_date else start
+    except ValueError as exc:
+        raise HTTPException(400, "Укажите корректный диапазон дат") from exc
+    if end < start:
+        raise HTTPException(400, "Дата окончания не может быть раньше даты начала")
+    if not claim_action(user["id"], "day_off", 5):
+        raise HTTPException(429, "Подождите несколько секунд перед повторной отправкой")
     with connect() as db:
-        cursor = db.execute("INSERT INTO day_off_requests(user_id, request_date, created_at) VALUES (?, ?, ?)", (user["id"], request_date, datetime.utcnow().isoformat()))
+        cursor = db.execute("INSERT INTO day_off_requests(user_id, request_date, request_end_date, created_at) VALUES (?, ?, ?, ?)", (user["id"], start.isoformat(), end.isoformat(), datetime.utcnow().isoformat()))
         request_id = cursor.lastrowid
     if settings.bot_token and settings.admin_ids:
         bot = Bot(settings.bot_token)
         try:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"dayoff:approved:{request_id}"), InlineKeyboardButton(text="Отклонить", callback_data=f"dayoff:rejected:{request_id}")]])
             for admin_id in settings.admin_ids:
-                await bot.send_message(admin_id, f"Заявка на выходной\nБармен: {user['full_name']}\nДата: {request_date}", reply_markup=keyboard)
+                await bot.send_message(admin_id, f"Заявка на выходной\nСотрудник: {user['full_name']}\nДаты: {start.isoformat()}" + (f" — {end.isoformat()}" if end != start else ""), reply_markup=keyboard)
         finally:
             await bot.session.close()
     return {"ok": True}
@@ -328,6 +386,8 @@ async def day_off(request_date: str = Form(...), x_telegram_init_data: str | Non
 @app.post("/api/shift-swap")
 async def shift_swap(request_date: str = Form(...), target_user_id: int | None = Form(default=None), comment: str = Form(""), x_telegram_init_data: str | None = Header(default=None)):
     user = approved_user(x_telegram_init_data)
+    if not claim_action(user["id"], "shift_swap", 5):
+        raise HTTPException(429, "Подождите несколько секунд перед повторной отправкой")
     try:
         date.fromisoformat(request_date)
     except ValueError as exc:
@@ -362,6 +422,8 @@ async def shift_swap(request_date: str = Form(...), target_user_id: int | None =
 @app.post("/api/shift-hours")
 async def submit_shift_hours(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
     user = approved_user(x_telegram_init_data)
+    if not claim_action(user["id"], "shift_hours", 5):
+        raise HTTPException(429, "Подождите несколько секунд перед повторной отправкой")
     try:
         work_date = date.fromisoformat(str(payload.get("work_date", "")))
         hours = float(payload.get("hours", 0))
@@ -379,6 +441,8 @@ async def submit_shift_hours(payload: dict = Body(...), x_telegram_init_data: st
 @app.post("/api/shifts")
 async def create_shift(cash_amount: float = Form(0), card_amount: float = Form(0), comment: str = Form(""), photo_types: str = Form("[]"), photos: list[UploadFile] = File(default=[]), x_telegram_init_data: str | None = Header(default=None)):
     user = approved_user(x_telegram_init_data)
+    if not claim_action(user["id"], "shift_report", 5):
+        raise HTTPException(429, "Подождите несколько секунд перед повторной отправкой")
     required_photo_types = {"bar_station", "sink", "tea_surface", "coffee_station", "mini_fridge"}
     submitted_photo_types = set(json.loads(photo_types))
     if len(photos) != len(required_photo_types) or submitted_photo_types != required_photo_types:
@@ -413,23 +477,30 @@ async def create_shift(cash_amount: float = Form(0), card_amount: float = Form(0
 @app.get("/api/order-items")
 def order_items(x_telegram_init_data: str | None = Header(default=None)):
     user = approved_user(x_telegram_init_data)
-    if user["role"] != "bartender": return []
     with connect() as db:
         rows = db.execute("SELECT s.id AS supplier_id, s.name AS supplier_name, i.id, i.name FROM suppliers s JOIN supplier_items i ON i.supplier_id=s.id WHERE s.is_active=1 AND i.is_active=1 ORDER BY s.name, i.name").fetchall()
     return [row_dict(row) for row in rows]
 
 @app.post("/api/orders")
 async def create_order(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
-    user = approved_user(x_telegram_init_data); order_type = "bar" if user["role"] == "bartender" else "hall"; comment = str(payload.get("comment", "")).strip(); items = payload.get("items", []) if order_type == "bar" else []
-    if order_type == "hall" and not comment: raise HTTPException(400, "Заполните заказ")
-    if order_type == "bar":
+    user = approved_user(x_telegram_init_data); order_type = "bar" if user["role"] == "bartender" else "hall"; comment = str(payload.get("comment", "")).strip(); items = payload.get("items", [])
+    if not claim_action(user["id"], "order", 5):
+        raise HTTPException(429, "Подождите 5 секунд перед отправкой следующего заказа")
+    if items:
         items = [{"name": str(i.get("name", "")), "quantity": int(i.get("quantity", 0)), "supplier": str(i.get("supplier", ""))} for i in items if int(i.get("quantity", 0)) > 0]
         if not items: raise HTTPException(400, "Добавьте хотя бы одну позицию")
+        comment = comment or ""
+    elif order_type == "hall" and not comment: raise HTTPException(400, "Заполните заказ или выберите позиции")
+    elif order_type == "bar": raise HTTPException(400, "Добавьте хотя бы одну позицию")
     with connect() as db: cursor = db.execute("INSERT INTO orders(user_id, order_type, comment, items, created_at) VALUES (?, ?, ?, ?, ?)", (user["id"], order_type, comment, json.dumps(items, ensure_ascii=False), datetime.utcnow().isoformat()))
     if settings.bot_token and settings.admin_ids:
         bot = Bot(settings.bot_token)
         try:
-            if order_type == "hall":
+            if order_type == "hall" and items:
+                grouped = {}
+                for item in items: grouped.setdefault(item["supplier"], []).append(item)
+                messages = [f"Заказ ЗАЛ — {supplier}\nОт: {user['full_name']}\n\n" + "\n".join(f"• {item['name']}: {item['quantity']}" for item in supplier_items) + (f"\n\nДополнительно:\n{comment}" if comment else "") for supplier, supplier_items in grouped.items()]
+            elif order_type == "hall":
                 messages = [f"Заказ ЗАЛ\nОт: {user['full_name']}\n\n{comment}"]
             else:
                 grouped = {}

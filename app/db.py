@@ -91,8 +91,16 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id), order_type TEXT NOT NULL, comment TEXT NOT NULL DEFAULT '', items TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS shift_hour_confirmations (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id), work_date TEXT NOT NULL, hours REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, processed_at TEXT, UNIQUE(user_id, work_date));
             CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS reservations (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id), reservation_date TEXT NOT NULL, reservation_time TEXT NOT NULL, guest_name TEXT NOT NULL, guest_count INTEGER, phone TEXT NOT NULL DEFAULT '', table_name TEXT NOT NULL DEFAULT '', service_fee INTEGER, created_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS user_action_limits (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, action TEXT NOT NULL, last_at TEXT NOT NULL, PRIMARY KEY(user_id, action));
+            CREATE TABLE IF NOT EXISTS shift_hour_reminders (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, work_date TEXT NOT NULL, sent_at TEXT NOT NULL, PRIMARY KEY(user_id, work_date));
             """
         )
+        day_off_columns = {row[1] for row in db.execute("PRAGMA table_info(day_off_requests)")}
+        if "request_end_date" not in day_off_columns:
+            db.execute("ALTER TABLE day_off_requests ADD COLUMN request_end_date TEXT")
+        if "request_end_date" not in day_off_columns:
+            db.execute("UPDATE day_off_requests SET request_end_date = request_date WHERE request_end_date IS NULL")
         columns = {row[1] for row in db.execute("PRAGMA table_info(users)")}
         if "status" not in columns:
             db.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'approved'")
@@ -124,6 +132,25 @@ def init_db() -> None:
             db.executemany("INSERT INTO recipes(title, category, ingredients, recipe_text, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", demo)
 
 
+def claim_action(user_id: int, action: str, cooldown_seconds: int) -> bool:
+    """Atomically reserve a per-user action slot; safe across concurrent requests."""
+    now = datetime.utcnow()
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT last_at FROM user_action_limits WHERE user_id=? AND action=?", (user_id, action)).fetchone()
+        if row:
+            try:
+                elapsed = (now - datetime.fromisoformat(row["last_at"])).total_seconds()
+            except ValueError:
+                elapsed = cooldown_seconds
+            if elapsed < cooldown_seconds:
+                return False
+            db.execute("UPDATE user_action_limits SET last_at=? WHERE user_id=? AND action=?", (now.isoformat(), user_id, action))
+        else:
+            db.execute("INSERT INTO user_action_limits(user_id, action, last_at) VALUES (?, ?, ?)", (user_id, action, now.isoformat()))
+        return True
+
+
 def upsert_user(telegram_id: int, full_name: str, role: str | None = None, username: str = "") -> sqlite3.Row:
     with connect() as db:
         existing = db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()
@@ -141,7 +168,7 @@ def create_pending_user(telegram_id: int, full_name: str, phone: str, role: str,
     with connect() as db:
         db.execute(
             "INSERT INTO users(telegram_id, full_name, phone, role, username, status, is_active, created_at) VALUES (?, ?, ?, ?, ?, 'pending', 1, ?) "
-            "ON CONFLICT(telegram_id) DO UPDATE SET full_name=excluded.full_name, phone=excluded.phone, role=excluded.role, username=excluded.username, status='pending', is_active=1",
+            "ON CONFLICT(telegram_id) DO UPDATE SET full_name=excluded.full_name, phone=excluded.phone, role=excluded.role, username=excluded.username, status='pending', is_active=1, created_at=excluded.created_at",
             (telegram_id, full_name, phone, role, username, datetime.utcnow().isoformat()),
         )
         return db.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)).fetchone()

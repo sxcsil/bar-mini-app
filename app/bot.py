@@ -1,5 +1,7 @@
 import asyncio
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramNetworkError
@@ -50,7 +52,7 @@ async def admin(message: Message) -> None:
         return
     with connect() as db:
         access_requests = db.execute("SELECT id, telegram_id, full_name, phone, role FROM users WHERE status = 'pending' ORDER BY created_at").fetchall()
-        requests = db.execute("SELECT r.id, r.request_date, u.full_name FROM day_off_requests r JOIN users u ON u.id = r.user_id WHERE r.status = 'pending' ORDER BY r.created_at").fetchall()
+        requests = db.execute("SELECT r.id, r.request_date, r.request_end_date, u.full_name FROM day_off_requests r JOIN users u ON u.id = r.user_id WHERE r.status = 'pending' ORDER BY r.created_at").fetchall()
         users = db.execute("SELECT id, full_name FROM users WHERE is_active = 1 ORDER BY full_name").fetchall()
     if not requests:
         await message.answer("Ожидающих заявок на выходной нет.")
@@ -61,7 +63,9 @@ async def admin(message: Message) -> None:
         await message.answer(f"Заявка на доступ\nФИО: {request['full_name']}\nРоль: {request['role']}", reply_markup=keyboard)
     for request in requests:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"dayoff:approved:{request['id']}"), InlineKeyboardButton(text="Отклонить", callback_data=f"dayoff:rejected:{request['id']}")]])
-        await message.answer(f"Заявка на выходной\nБармен: {request['full_name']}\nДата: {request['request_date']}", reply_markup=keyboard)
+        end_date = request["request_end_date"] or request["request_date"]
+        dates = request["request_date"] if end_date == request["request_date"] else f"{request['request_date']} — {end_date}"
+        await message.answer(f"Заявка на выходной\nСотрудник: {request['full_name']}\nДаты: {dates}", reply_markup=keyboard)
     if users:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"График: {user['full_name']}", callback_data=f"schedule:{user['id']}")] for user in users])
         await message.answer("Выберите сотрудника, чтобы назначить смену на дату командой:\n/setshift USER_ID YYYY-MM-DD day|night|off", reply_markup=keyboard)
@@ -88,11 +92,14 @@ async def process_day_off(callback: CallbackQuery) -> None:
             return
         db.execute("UPDATE day_off_requests SET status = ?, processed_at = ? WHERE id = ?", (status, __import__("datetime").datetime.utcnow().isoformat(), int(request_id)))
         if status == "approved":
-            db.execute("DELETE FROM schedules WHERE user_id = (SELECT user_id FROM day_off_requests WHERE id = ?) AND work_date = ?", (int(request_id), request["request_date"]))
+            end_date = request["request_end_date"] or request["request_date"]
+            db.execute("DELETE FROM schedules WHERE user_id = ? AND work_date BETWEEN ? AND ?", (request["user_id"], request["request_date"], end_date))
+    end_date = request["request_end_date"] or request["request_date"]
+    dates = request["request_date"] if end_date == request["request_date"] else f"{request['request_date']} — {end_date}"
     label = "одобрена" if status == "approved" else "отклонена"
-    await callback.message.edit_text(f"Заявка на {request['request_date']} {label}.")
+    await callback.message.edit_text(f"Заявка на {dates} {label}.")
     if settings.bot_token:
-        await callback.bot.send_message(request["telegram_id"], f"Заявка на выходной {request['request_date']} {label} администратором.")
+        await callback.bot.send_message(request["telegram_id"], f"Заявка на выходной {dates} {label} администратором.")
     await callback.answer("Готово")
 
 
@@ -167,6 +174,26 @@ async def set_shift(message: Message) -> None:
     await message.answer("Смена сохранена.")
 
 
+async def shift_hours_reminder_loop(bot: Bot) -> None:
+    timezone = ZoneInfo("Europe/Moscow")
+    while True:
+        now = datetime.now(timezone)
+        if now.hour == 22:
+            work_date = now.date().isoformat()
+            with connect() as db:
+                users = db.execute("SELECT DISTINCT u.id,u.telegram_id,u.full_name FROM schedules s JOIN users u ON u.id=s.user_id LEFT JOIN shift_hour_confirmations h ON h.user_id=s.user_id AND h.work_date=s.work_date AND h.status='approved' LEFT JOIN shift_hour_reminders r ON r.user_id=s.user_id AND r.work_date=s.work_date WHERE s.work_date=? AND h.id IS NULL AND r.user_id IS NULL AND u.is_active=1 AND u.status='approved'", (work_date,)).fetchall()
+            target = f"{settings.mini_app_url}{'&' if '?' in settings.mini_app_url else '?'}open=hours&date={work_date}"
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Указать часы", web_app=WebAppInfo(url=target))]])
+            for user in users:
+                try:
+                    await bot.send_message(user["telegram_id"], "Заполните, пожалуйста, количество отработанных часов за смену", reply_markup=keyboard)
+                    with connect() as db:
+                        db.execute("INSERT OR IGNORE INTO shift_hour_reminders(user_id, work_date, sent_at) VALUES (?,?,?)", (user["id"], work_date, datetime.utcnow().isoformat()))
+                except Exception:
+                    logging.exception("Не удалось отправить напоминание о часах пользователю %s", user["telegram_id"])
+        await asyncio.sleep(45)
+
+
 async def run_bot() -> None:
     if not settings.bot_token:
         logging.warning("BOT_TOKEN is empty; Telegram bot is disabled")
@@ -181,7 +208,12 @@ async def run_bot() -> None:
             menu_url = f"{settings.mini_app_url}{'&' if '?' in settings.mini_app_url else '?'}v=14"
             await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Приложение", web_app=WebAppInfo(url=menu_url)))
             logging.info("Telegram menu button updated: %s", menu_url)
-            await dp.start_polling(bot)
+            reminder_task = asyncio.create_task(shift_hours_reminder_loop(bot))
+            try:
+                await dp.start_polling(bot)
+            finally:
+                reminder_task.cancel()
+                await asyncio.gather(reminder_task, return_exceptions=True)
             return
         except TelegramNetworkError as exc:
             logging.error("Telegram недоступен: %s. Повтор через 10 секунд.", exc)
