@@ -8,6 +8,7 @@ from fastapi import Body, FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from aiogram import Bot
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from .config import settings
@@ -59,6 +60,11 @@ def admin_user(init_data: str | None):
     if user["role"] != "admin":
         raise HTTPException(403, "Доступ только для администратора")
     return user
+
+
+def telegram_bot() -> Bot:
+    session = AiohttpSession(proxy=settings.bot_proxy) if settings.bot_proxy else AiohttpSession()
+    return Bot(settings.bot_token, session=session)
 
 
 def reservation_calendar(month: str, x_telegram_init_data: str | None):
@@ -128,7 +134,7 @@ async def onboarding(payload: dict = Body(...), x_telegram_init_data: str | None
     user = create_pending_user(telegram_id, full_name, "", role, str(telegram_user.get("username") or ""))
     notification_sent = False
     if settings.bot_token and settings.admin_ids:
-        bot = Bot(settings.bot_token)
+        bot = telegram_bot()
         try:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"access:approved:{user['id']}"), InlineKeyboardButton(text="Отклонить", callback_data=f"access:rejected:{user['id']}")]])
             for admin_id in settings.admin_ids:
@@ -336,7 +342,7 @@ async def process_day_off_api(request_id: int, payload: dict = Body(...), x_tele
             end_date = request["request_end_date"] or request["request_date"]
             db.execute("DELETE FROM schedules WHERE user_id = ? AND work_date BETWEEN ? AND ?", (request["user_id"], request["request_date"], end_date))
     if settings.bot_token:
-        bot = Bot(settings.bot_token)
+        bot = telegram_bot()
         try:
             end_date = request["request_end_date"] or request["request_date"]
             date_label = request["request_date"] if end_date == request["request_date"] else f"{request['request_date']} — {end_date}"
@@ -372,15 +378,23 @@ async def day_off(request_date: str = Form(...), request_end_date: str = Form(""
     with connect() as db:
         cursor = db.execute("INSERT INTO day_off_requests(user_id, request_date, request_end_date, created_at) VALUES (?, ?, ?, ?)", (user["id"], start.isoformat(), end.isoformat(), datetime.utcnow().isoformat()))
         request_id = cursor.lastrowid
+    notification_sent = False
     if settings.bot_token and settings.admin_ids:
-        bot = Bot(settings.bot_token)
+        bot = telegram_bot()
         try:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Одобрить", callback_data=f"dayoff:approved:{request_id}"), InlineKeyboardButton(text="Отклонить", callback_data=f"dayoff:rejected:{request_id}")]])
+            message = f"Заявка на выходной\nСотрудник: {user['full_name']}\nДаты: {start.strftime('%d.%m.%Y')}" + (f" — {end.strftime('%d.%m.%Y')}" if end != start else "")
             for admin_id in settings.admin_ids:
-                await bot.send_message(admin_id, f"Заявка на выходной\nСотрудник: {user['full_name']}\nДаты: {start.isoformat()}" + (f" — {end.isoformat()}" if end != start else ""), reply_markup=keyboard)
+                try:
+                    await bot.send_message(admin_id, message, reply_markup=keyboard)
+                    notification_sent = True
+                except Exception:
+                    logging.exception("Не удалось доставить заявку на выходной администратору %s (заявка %s)", admin_id, request_id)
         finally:
             await bot.session.close()
-    return {"ok": True}
+    else:
+        logging.error("Заявка на выходной %s сохранена, но BOT_TOKEN или ADMIN_TELEGRAM_IDS не настроены", request_id)
+    return {"ok": True, "notification_sent": notification_sent, "id": request_id}
 
 
 @app.post("/api/shift-swap")
@@ -405,7 +419,7 @@ async def shift_swap(request_date: str = Form(...), target_user_id: int | None =
         cursor = db.execute("INSERT INTO shift_swap_requests(requester_id, target_user_id, request_date, comment, created_at) VALUES (?, ?, ?, ?, ?)", (user["id"], target_user_id, request_date, comment, datetime.utcnow().isoformat()))
         request_id = cursor.lastrowid
     if settings.bot_token:
-        bot = Bot(settings.bot_token)
+        bot = telegram_bot()
         try:
             keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Принять смену", callback_data=f"swap:approved:{request_id}"), InlineKeyboardButton(text="Отклонить", callback_data=f"swap:rejected:{request_id}")]])
             try: await bot.send_message(target["telegram_id"], f"Сотрудник {user['full_name']} предлагает передать вам смену на {request_date}. Комментарий: {comment or '—'}", reply_markup=keyboard)
@@ -460,7 +474,7 @@ async def create_shift(cash_amount: float = Form(0), card_amount: float = Form(0
             db.execute("INSERT INTO shift_photos(shift_id, photo_type, photo_path, created_at) VALUES (?, ?, ?, ?)", (shift_id, types[index] if index < len(types) else "other", str(target), now))
             saved_paths.append((types[index] if index < len(types) else "other", str(target)))
     if settings.bot_token and settings.admin_ids:
-        bot = Bot(settings.bot_token)
+        bot = telegram_bot()
         try:
             text = (f"Новый отчёт о закрытии смены\nБармен: {user['full_name']}\n"
                     f"Дата: {date.today().strftime('%d.%m.%Y')}\n"
@@ -494,7 +508,7 @@ async def create_order(payload: dict = Body(...), x_telegram_init_data: str | No
     elif order_type == "bar": raise HTTPException(400, "Добавьте хотя бы одну позицию")
     with connect() as db: cursor = db.execute("INSERT INTO orders(user_id, order_type, comment, items, created_at) VALUES (?, ?, ?, ?, ?)", (user["id"], order_type, comment, json.dumps(items, ensure_ascii=False), datetime.utcnow().isoformat()))
     if settings.bot_token and settings.admin_ids:
-        bot = Bot(settings.bot_token)
+        bot = telegram_bot()
         try:
             if order_type == "hall" and items:
                 grouped = {}

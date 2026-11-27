@@ -8,3 +8,17 @@ input[type="date"]{display:block;width:100%;min-width:0;max-width:100%;box-sizin
 .photo-slot{overflow:hidden;overflow-wrap:anywhere;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:132px}
 .photo-slot b{max-width:100%;overflow-wrap:anywhere}
 @media(max-width:560px){.photo-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.photo-slot{min-height:116px}.schedule-section{padding:14px}.schedule-section label{display:grid;grid-template-columns:minmax(0,1fr)}.schedule-section input[type="date"]{font-size:16px}}
+
+/* Native hidden forms must stay hidden despite .form's display:grid rule. */
+[hidden]{display:none!important}
+#reservations,.reservation-form,.reservation-form label{min-width:0;max-width:100%}
+.reservation-form{gap:13px;padding:18px}
+.reservation-form h3{margin:0;font-size:20px}
+.reservation-form .reservation-hint{margin:0;line-height:1.45}
+.reservation-form label{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;font-size:14px}
+.reservation-form input,.reservation-form select,.reservation-form textarea{display:block;width:100%;min-width:0;max-width:100%;box-sizing:border-box}
+.reservation-form input[type="date"],.reservation-form input[type="time"]{-webkit-appearance:none;appearance:none;min-height:48px;font-size:16px}
+.reservation-form input,.reservation-form select{min-height:48px}
+.reservation-form button{width:100%;min-width:0;max-width:100%;margin-top:3px}
+.reservation-form .result{overflow-wrap:anywhere}
+@media(max-width:560px){.reservation-form{padding:15px}.reservation-form input[type="date"],.reservation-form input[type="time"]{font-size:16px}}
