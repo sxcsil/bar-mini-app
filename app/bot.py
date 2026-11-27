@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -248,6 +248,71 @@ async def reservation_digest_loop(bot: Bot) -> None:
         await asyncio.sleep(45)
 
 
+async def reservation_reminder_loop(bot: Bot) -> None:
+    """Send each active employee a private reminder one hour before a booking."""
+    timezone = ZoneInfo("Europe/Moscow")
+    while True:
+        now = datetime.now(timezone)
+        cutoff = now + timedelta(hours=1)
+        with connect() as db:
+            bookings = db.execute(
+                "SELECT r.* FROM reservations r "
+                "ORDER BY r.reservation_date,r.reservation_time,r.id"
+            ).fetchall()
+        for booking in bookings:
+            try:
+                starts_at = datetime.combine(
+                    date.fromisoformat(booking["reservation_date"]),
+                    time.fromisoformat(booking["reservation_time"]),
+                    tzinfo=timezone,
+                )
+            except ValueError:
+                logging.exception("Некорректные дата или время брони %s", booking["id"])
+                continue
+            # If the bot was restarted during the reminder window, deliver as soon
+            # as possible. Do not send after the booking has already started.
+            if not now < starts_at <= cutoff:
+                continue
+            with connect() as db:
+                recipients = db.execute(
+                    "SELECT u.id,u.telegram_id FROM users u WHERE u.is_active=1 "
+                    "AND u.status='approved' AND NOT EXISTS ("
+                    "SELECT 1 FROM reservation_reminder_deliveries d "
+                    "WHERE d.reservation_id=? AND d.user_id=u.id) ORDER BY u.id",
+                    (booking["id"],),
+                ).fetchall()
+            text = (
+                f"Напоминание о брони на {starts_at.strftime('%d.%m.%Y')} "
+                f"в {starts_at.strftime('%H:%M')}\n"
+                f"Имя: {booking['guest_name']}"
+            )
+            if booking["guest_count"] is not None:
+                text += f"\nГостей: {booking['guest_count']}"
+            if booking["phone"]:
+                text += f"\nТелефон: {booking['phone']}"
+            if booking["table_name"]:
+                text += f"\nСтол: {booking['table_name']}"
+            if booking["service_fee"]:
+                text += "\nСервисный сбор 10%"
+            if booking["birthday_discount"]:
+                text += "\nСкидка на день рождения 10%"
+            for user in recipients:
+                try:
+                    await bot.send_message(user["telegram_id"], text)
+                    with connect() as db:
+                        db.execute(
+                            "INSERT OR IGNORE INTO reservation_reminder_deliveries "
+                            "(reservation_id,user_id,sent_at) VALUES (?,?,?)",
+                            (booking["id"], user["id"], datetime.utcnow().isoformat()),
+                        )
+                except Exception:
+                    logging.exception(
+                        "Не удалось отправить напоминание о брони %s сотруднику %s",
+                        booking["id"], user["id"],
+                    )
+        await asyncio.sleep(30)
+
+
 async def run_bot() -> None:
     if not settings.bot_token:
         logging.warning("BOT_TOKEN is empty; Telegram bot is disabled")
@@ -264,12 +329,14 @@ async def run_bot() -> None:
             logging.info("Telegram menu button updated: %s", menu_url)
             reminder_task = asyncio.create_task(shift_hours_reminder_loop(bot))
             reservation_task = asyncio.create_task(reservation_digest_loop(bot))
+            booking_reminder_task = asyncio.create_task(reservation_reminder_loop(bot))
             try:
                 await dp.start_polling(bot)
             finally:
                 reminder_task.cancel()
                 reservation_task.cancel()
-                await asyncio.gather(reminder_task, reservation_task, return_exceptions=True)
+                booking_reminder_task.cancel()
+                await asyncio.gather(reminder_task, reservation_task, booking_reminder_task, return_exceptions=True)
             return
         except TelegramNetworkError as exc:
             logging.error("Telegram недоступен: %s. Повтор через 10 секунд.", exc)

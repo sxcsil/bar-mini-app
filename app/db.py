@@ -95,6 +95,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS user_action_limits (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, action TEXT NOT NULL, last_at TEXT NOT NULL, PRIMARY KEY(user_id, action));
             CREATE TABLE IF NOT EXISTS shift_hour_reminders (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, work_date TEXT NOT NULL, sent_at TEXT NOT NULL, PRIMARY KEY(user_id, work_date));
             CREATE TABLE IF NOT EXISTS reservation_digest_messages (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, digest_date TEXT NOT NULL, message_id INTEGER NOT NULL, is_pinned INTEGER NOT NULL DEFAULT 0, sent_at TEXT NOT NULL, PRIMARY KEY(user_id, digest_date));
+            CREATE TABLE IF NOT EXISTS reservation_reminder_deliveries (reservation_id INTEGER NOT NULL REFERENCES reservations(id) ON DELETE CASCADE, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, sent_at TEXT NOT NULL, PRIMARY KEY(reservation_id, user_id));
             """
         )
         day_off_columns = {row[1] for row in db.execute("PRAGMA table_info(day_off_requests)")}

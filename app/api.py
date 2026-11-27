@@ -213,11 +213,13 @@ async def update_reservation(reservation_id: int, payload: dict = Body(...), x_t
     fee = reservation_bool(payload.get("service_fee"))
     birthday_discount = reservation_bool(payload.get("birthday_discount"))
     with connect() as db:
-        existing = db.execute("SELECT reservation_date FROM reservations WHERE id=?", (reservation_id,)).fetchone()
+        existing = db.execute("SELECT reservation_date,reservation_time FROM reservations WHERE id=?", (reservation_id,)).fetchone()
         if not existing:
             raise HTTPException(404, "Бронь не найдена")
         old_date = date.fromisoformat(existing["reservation_date"])
         cursor = db.execute("UPDATE reservations SET reservation_date=?,reservation_time=?,guest_name=?,guest_count=?,phone=?,table_name=?,service_fee=?,birthday_discount=? WHERE id=?", (booking_date.isoformat(), booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, birthday_discount, reservation_id))
+        if existing["reservation_date"] != booking_date.isoformat() or existing["reservation_time"] != booking_time.strftime("%H:%M"):
+            db.execute("DELETE FROM reservation_reminder_deliveries WHERE reservation_id=?", (reservation_id,))
     await refresh_pinned_reservation_digest(old_date)
     if booking_date != old_date:
         await refresh_pinned_reservation_digest(booking_date)
