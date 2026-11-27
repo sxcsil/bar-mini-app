@@ -379,6 +379,7 @@ async def day_off(request_date: str = Form(...), request_end_date: str = Form(""
         cursor = db.execute("INSERT INTO day_off_requests(user_id, request_date, request_end_date, created_at) VALUES (?, ?, ?, ?)", (user["id"], start.isoformat(), end.isoformat(), datetime.utcnow().isoformat()))
         request_id = cursor.lastrowid
     notification_sent = False
+    notification_errors: list[str] = []
     if settings.bot_token and settings.admin_ids:
         bot = telegram_bot()
         try:
@@ -389,12 +390,13 @@ async def day_off(request_date: str = Form(...), request_end_date: str = Form(""
                     await bot.send_message(admin_id, message, reply_markup=keyboard)
                     notification_sent = True
                 except Exception:
+                    notification_errors.append(f"admin {admin_id}")
                     logging.exception("Не удалось доставить заявку на выходной администратору %s (заявка %s)", admin_id, request_id)
         finally:
             await bot.session.close()
     else:
         logging.error("Заявка на выходной %s сохранена, но BOT_TOKEN или ADMIN_TELEGRAM_IDS не настроены", request_id)
-    return {"ok": True, "notification_sent": notification_sent, "id": request_id}
+    return {"ok": True, "notification_sent": notification_sent, "id": request_id, "notification_errors": notification_errors}
 
 
 @app.post("/api/shift-swap")
