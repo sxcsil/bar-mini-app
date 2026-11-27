@@ -13,6 +13,9 @@ let staffCalendarDate = new Date(new Date().getFullYear(), new Date().getMonth()
 let selectedCalendarDate = "";
 let reservationDate = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 let selectedReservationDate = "";
+let currentReservationRows = [];
+let editingReservationId = null;
+let activeSupplierType = "hall";
 
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const notify = (message) => tg?.showPopup ? tg.showPopup({ message }) : window.alert(message);
@@ -208,18 +211,21 @@ async function loadOrders() {
 }
 document.addEventListener("input", (event) => { if (!["hall-order-search", "bar-order-search"].includes(event.target.id)) return; const query = event.target.value.trim().toLowerCase(); const box = event.target.closest("#hall-order, #bar-order"); box?.querySelectorAll(".supplier-order-row").forEach((row) => { row.hidden = query && !row.textContent.toLowerCase().includes(query); }); box?.querySelectorAll(".supplier-order-group").forEach((group) => { group.hidden = ![...group.querySelectorAll(".supplier-order-row")].some((row) => !row.hidden); }); });
 async function submitOrder(payload, success) { const response = await fetch("/api/orders", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(payload) }); $("#order-result").textContent = response.ok ? success : ((await response.json().catch(() => ({}))).detail || "Не удалось отправить заказ."); }
-async function loadSupplierAdmin() { if (!isAdmin) return; $("#admin-order-config").hidden = false; const response = await adminRequest("/api/admin/suppliers"); const suppliers = response.suppliers; const items = response.items; $("#supplier-admin").innerHTML = `<form class="supplier-admin-form" id="supplier-form"><input name="name" placeholder="Новая категория / поставщик" required><button class="mini-button" type="submit">Добавить категорию</button></form>${suppliers.map((s) => `<div class="supplier-admin-block"><div><b>${escapeHtml(s.name)}</b><button class="mini-button" data-supplier-edit="${s.id}" data-supplier-name="${escapeHtml(s.name)}">✎</button><label class="archive-switch compact"><input type="checkbox" data-supplier-toggle="${s.id}" data-active="${s.is_active}" ${s.is_active ? "checked" : ""}><span></span></label><button class="mini-button danger" data-supplier-delete="${s.id}">×</button></div><ul>${items.filter((item) => item.supplier_id === s.id).map((item) => `<li class="supplier-admin-item ${item.is_active ? "" : "is-inactive"}"><span>${escapeHtml(item.name)}</span><span><button class="mini-button" data-supplier-item-edit="${item.id}" data-supplier-item-name="${escapeHtml(item.name)}">✎</button><label class="archive-switch compact"><input type="checkbox" data-supplier-item-toggle="${item.id}" data-active="${item.is_active}" ${item.is_active ? "checked" : ""}><span></span></label><button class="mini-button danger" data-supplier-item-delete="${item.id}">×</button></span></li>`).join("") || "<li class=\"muted\">Позиции ещё не добавлены</li>"}</ul><form class="supplier-admin-form supplier-item-form" data-supplier="${s.id}"><input name="name" placeholder="Новая позиция" required><button class="mini-button" type="submit">Добавить позицию</button></form></div>`).join("")}`;
-  $("#supplier-form").onsubmit = async (e) => { e.preventDefault(); await adminRequest("/api/admin/suppliers", { method: "POST", body: JSON.stringify({ name: new FormData(e.currentTarget).get("name") }) }); loadSupplierAdmin(); };
+async function loadSupplierAdmin() { if (!isAdmin) return; $("#admin-order-config").hidden = false; const response = await adminRequest(`/api/admin/suppliers?order_type=${activeSupplierType}`); const suppliers = response.suppliers; const items = response.items; $("#supplier-admin-heading").textContent = `Категории и позиции · ${activeSupplierType === "hall" ? "Зал" : "Бар"}`; document.querySelectorAll("[data-order-admin-tab]").forEach((tab) => tab.classList.toggle("active", tab.dataset.orderAdminTab === activeSupplierType)); $("#supplier-admin").innerHTML = `<form class="supplier-admin-form" id="supplier-form"><input name="name" placeholder="Новая категория / поставщик" required><button class="mini-button" type="submit">Добавить категорию</button></form>${suppliers.map((s) => `<div class="supplier-admin-block"><div><b>${escapeHtml(s.name)}</b><button class="mini-button" data-supplier-edit="${s.id}" data-supplier-name="${escapeHtml(s.name)}">✎</button><label class="archive-switch compact"><input type="checkbox" data-supplier-toggle="${s.id}" data-active="${s.is_active}" ${s.is_active ? "checked" : ""}><span></span></label><button class="mini-button danger" data-supplier-delete="${s.id}">×</button></div><ul>${items.filter((item) => item.supplier_id === s.id).map((item) => `<li class="supplier-admin-item ${item.is_active ? "" : "is-inactive"}"><span>${escapeHtml(item.name)}</span><span><button class="mini-button" data-supplier-item-edit="${item.id}" data-supplier-item-name="${escapeHtml(item.name)}">✎</button><label class="archive-switch compact"><input type="checkbox" data-supplier-item-toggle="${item.id}" data-active="${item.is_active}" ${item.is_active ? "checked" : ""}><span></span></label><button class="mini-button danger" data-supplier-item-delete="${item.id}">×</button></span></li>`).join("") || "<li class=\"muted\">Позиции ещё не добавлены</li>"}</ul><form class="supplier-admin-form supplier-item-form" data-supplier="${s.id}"><input name="name" placeholder="Новая позиция" required><button class="mini-button" type="submit">Добавить позицию</button></form></div>`).join("")}`;
+  $("#supplier-form").onsubmit = async (e) => { e.preventDefault(); await adminRequest("/api/admin/suppliers", { method: "POST", body: JSON.stringify({ name: new FormData(e.currentTarget).get("name"), order_type: activeSupplierType }) }); loadSupplierAdmin(); };
   document.querySelectorAll(".supplier-item-form").forEach((form) => form.onsubmit = async (e) => { e.preventDefault(); await adminRequest("/api/admin/supplier-items", { method: "POST", body: JSON.stringify({ supplier_id: form.dataset.supplier, name: new FormData(form).get("name") }) }); loadSupplierAdmin(); });
 }
 
-document.addEventListener("click", async (event) => { const b = event.target.closest("[data-supplier-edit],[data-supplier-toggle],[data-supplier-delete],[data-supplier-item-edit],[data-supplier-item-toggle],[data-supplier-item-delete]"); if (!b || !isAdmin) return; const isItem = b.dataset.supplierItemEdit || b.dataset.supplierItemToggle || b.dataset.supplierItemDelete; const id = b.dataset.supplierItemEdit || b.dataset.supplierItemToggle || b.dataset.supplierItemDelete || b.dataset.supplierEdit || b.dataset.supplierToggle || b.dataset.supplierDelete; const base = isItem ? "supplier-items" : "suppliers"; try { if (b.dataset.supplierEdit || b.dataset.supplierItemEdit) { const name = window.prompt("Новое название", b.dataset.supplierName || b.dataset.supplierItemName); if (name) await adminRequest(`/api/admin/${base}/${id}`, { method: "PATCH", body: JSON.stringify({ name, is_active: true }) }); } else if (b.dataset.supplierToggle || b.dataset.supplierItemToggle) await adminRequest(`/api/admin/${base}/${id}`, { method: "PATCH", body: JSON.stringify({ name: b.dataset.supplierName || b.dataset.supplierItemName || "", is_active: b.dataset.active !== "1" }) }); else if (window.confirm("Удалить?")) await adminRequest(`/api/admin/${base}/${id}`, { method: "DELETE" }); loadSupplierAdmin(); } catch { notify("Не удалось изменить поставщика или позицию."); } });
+document.addEventListener("click", async (event) => { const tab = event.target.closest("[data-order-admin-tab]"); if (tab) { activeSupplierType = tab.dataset.orderAdminTab; loadSupplierAdmin(); return; } const b = event.target.closest("[data-supplier-edit],[data-supplier-toggle],[data-supplier-delete],[data-supplier-item-edit],[data-supplier-item-toggle],[data-supplier-item-delete]"); if (!b || !isAdmin) return; const isItem = b.dataset.supplierItemEdit || b.dataset.supplierItemToggle || b.dataset.supplierItemDelete; const id = b.dataset.supplierItemEdit || b.dataset.supplierItemToggle || b.dataset.supplierItemDelete || b.dataset.supplierEdit || b.dataset.supplierToggle || b.dataset.supplierDelete; const base = isItem ? "supplier-items" : "suppliers"; try { if (b.dataset.supplierEdit || b.dataset.supplierItemEdit) { const name = window.prompt("Новое название", b.dataset.supplierName || b.dataset.supplierItemName); if (name) await adminRequest(`/api/admin/${base}/${id}`, { method: "PATCH", body: JSON.stringify({ name, is_active: true }) }); } else if (b.dataset.supplierToggle || b.dataset.supplierItemToggle) await adminRequest(`/api/admin/${base}/${id}`, { method: "PATCH", body: JSON.stringify({ name: b.dataset.supplierName || b.dataset.supplierItemName || "", is_active: b.dataset.active !== "1" }) }); else if (window.confirm("Удалить?")) await adminRequest(`/api/admin/${base}/${id}`, { method: "DELETE" }); loadSupplierAdmin(); } catch { notify("Не удалось изменить поставщика или позицию."); } });
+
+document.querySelectorAll("[data-order-admin-tab]").forEach((tab) => tab.addEventListener("click", () => { activeSupplierType = tab.dataset.orderAdminTab; loadSupplierAdmin(); }));
 
 function reservationMonthKey() { return `${reservationDate.getFullYear()}-${String(reservationDate.getMonth() + 1).padStart(2, "0")}`; }
 async function loadReservations() {
   const response = await fetch(`/api/reservations?month=${reservationMonthKey()}`, { headers });
   if (!response.ok) return;
   const rows = await response.json();
+  currentReservationRows = rows;
   const byDate = rows.reduce((map, row) => ((map[row.reservation_date] ||= []).push(row), map), {});
   const year = reservationDate.getFullYear(), month = reservationDate.getMonth(), first = new Date(year, month, 1), days = new Date(year, month + 1, 0).getDate();
   $("#reservation-month").textContent = reservationDate.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
@@ -232,7 +238,7 @@ async function loadReservations() {
 }
 function renderReservationDay(day, rows) {
   const panel = $("#reservation-day"); panel.hidden = false;
-  panel.innerHTML = `<h3>${new Date(`${day}T00:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" })}</h3>${rows.map((item) => `<article class="reservation-card"><b>${escapeHtml(item.reservation_time)} · ${escapeHtml(item.guest_name)}</b><div>${item.guest_count ? `${item.guest_count} чел.` : ""}${item.phone ? ` · ${escapeHtml(item.phone)}` : ""}${item.table_name ? ` · стол ${escapeHtml(item.table_name)}` : ""}</div>${item.service_fee === null ? "" : `<small>Сервисный сбор 10%: ${item.service_fee ? "да" : "нет"}</small>`}</article>`).join("") || '<p class="muted">На этот день броней пока нет.</p>'}`;
+  panel.innerHTML = `<h3>${new Date(`${day}T00:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" })}</h3>${rows.map((item) => `<article class="reservation-card"><div class="reservation-card-main"><b>${escapeHtml(item.reservation_time)} · ${escapeHtml(item.guest_name)}</b><div>${item.guest_count ? `${item.guest_count} чел.` : ""}${item.phone ? ` · ${escapeHtml(item.phone)}` : ""}${item.table_name ? ` · стол ${escapeHtml(item.table_name)}` : ""}</div>${item.service_fee === null ? "" : `<small>Сервисный сбор 10%: ${item.service_fee ? "да" : "нет"}</small>`}</div><div class="reservation-card-actions"><button class="mini-button" type="button" data-edit-reservation="${item.id}">Изменить</button><button class="mini-button danger" type="button" data-delete-reservation="${item.id}">Удалить</button></div></article>`).join("") || '<p class="muted">На этот день броней пока нет.</p>'}`;
   $("#reservation-form").hidden = false; $("#reservation-date").value = day;
 }
 $("#reservation-prev")?.addEventListener("click", () => { reservationDate.setMonth(reservationDate.getMonth() - 1); loadReservations(); });
@@ -244,7 +250,50 @@ $("#reservation-form")?.addEventListener("keydown", (event) => {
   const index = fields.indexOf(event.target);
   if (index >= 0 && fields.length) fields[(index + 1) % fields.length].focus();
 });
-$("#reservation-form")?.addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const values = Object.fromEntries(new FormData(form)); const response = await fetch("/api/reservations", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(values) }); const result = await response.json().catch(() => ({})); $("#reservation-result").textContent = response.ok ? (result.notification_sent ? `Бронь сохранена. Уведомление отправлено ${result.notification_sent} сотрудникам.` : "Бронь сохранена, но уведомление сотрудникам не доставлено.") : (result.detail || "Не удалось сохранить бронь."); if (response.ok) { const savedDate = values.reservation_date; form.reset(); selectedReservationDate = savedDate; await loadReservations(); } });
+function startReservationEdit(id) {
+  const item = currentReservationRows.find((row) => row.id === id);
+  if (!item) return;
+  editingReservationId = id;
+  const form = $("#reservation-form");
+  form.elements.reservation_date.value = item.reservation_date;
+  form.elements.reservation_time.value = item.reservation_time;
+  form.elements.guest_name.value = item.guest_name;
+  form.elements.guest_count.value = item.guest_count ?? "";
+  form.elements.phone.value = item.phone || "";
+  form.elements.table_name.value = item.table_name || "";
+  form.elements.service_fee.value = item.service_fee === null ? "" : String(item.service_fee);
+  form.querySelector("h3").textContent = "Редактировать бронь";
+  $("#reservation-submit").textContent = "Сохранить изменения";
+  $("#reservation-cancel-edit").hidden = false;
+  form.hidden = false;
+  form.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+function cancelReservationEdit() {
+  editingReservationId = null;
+  const form = $("#reservation-form");
+  form.reset(); form.querySelector("h3").textContent = "Новая бронь";
+  $("#reservation-submit").textContent = "Сохранить бронь";
+  $("#reservation-cancel-edit").hidden = true;
+  if (selectedReservationDate) $("#reservation-date").value = selectedReservationDate;
+}
+$("#reservation-cancel-edit")?.addEventListener("click", cancelReservationEdit);
+$("#reservation-day")?.addEventListener("click", async (event) => {
+  const edit = event.target.closest("[data-edit-reservation]");
+  if (edit) { startReservationEdit(Number(edit.dataset.editReservation)); return; }
+  const remove = event.target.closest("[data-delete-reservation]");
+  if (!remove || !window.confirm("Удалить эту бронь?")) return;
+  try { await adminRequest(`/api/reservations/${remove.dataset.deleteReservation}`, { method: "DELETE" }); await loadReservations(); }
+  catch { notify("Не удалось удалить бронь."); }
+});
+$("#reservation-form")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const values = Object.fromEntries(new FormData(form)); const editingId = editingReservationId;
+  const previousDate = editingId ? currentReservationRows.find((row) => row.id === editingId)?.reservation_date : null;
+  const response = await fetch(editingId ? `/api/reservations/${editingId}` : "/api/reservations", { method: editingId ? "PUT" : "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(values) });
+  const result = await response.json().catch(() => ({}));
+  $("#reservation-result").textContent = response.ok ? (editingId ? "Изменения сохранены." : (result.notification_sent ? `Бронь сохранена. Уведомление отправлено ${result.notification_sent} сотрудникам.` : "Бронь сохранена, но уведомление сотрудникам не доставлено.")) : (result.detail || "Не удалось сохранить бронь.");
+  if (response.ok) { const savedDate = values.reservation_date; editingReservationId = null; form.reset(); form.querySelector("h3").textContent = "Новая бронь"; $("#reservation-submit").textContent = "Сохранить бронь"; $("#reservation-cancel-edit").hidden = true; selectedReservationDate = savedDate; if (previousDate && previousDate.slice(0, 7) !== savedDate.slice(0, 7)) { reservationDate = new Date(`${savedDate.slice(0, 7)}-01T00:00:00`); } await loadReservations(); }
+});
 
 function coolButton(button) { if (!button || button.dataset.cooldownActive === "1") return; button.dataset.cooldownActive = "1"; button.disabled = true; button.classList.add("cooldown-active"); window.setTimeout(() => { button.disabled = false; button.dataset.cooldownActive = "0"; button.classList.remove("cooldown-active"); }, 5000); }
 // Do not disable submit buttons during click capture: that can cancel the

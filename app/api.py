@@ -140,6 +140,43 @@ async def add_reservation(payload: dict = Body(...), x_telegram_init_data: str |
     return {"ok": True, "id": cursor.lastrowid, "notification_sent": notification_sent}
 
 
+@app.put("/api/reservations/{reservation_id}")
+def update_reservation(reservation_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    approved_user(x_telegram_init_data)
+    try:
+        booking_date = date.fromisoformat(str(payload.get("reservation_date", "")))
+        booking_time = datetime.strptime(str(payload.get("reservation_time", "")), "%H:%M").time()
+    except ValueError as exc:
+        raise HTTPException(400, "Укажите дату и время брони") from exc
+    guest_name = str(payload.get("guest_name", "")).strip()
+    if not guest_name:
+        raise HTTPException(400, "Укажите имя")
+    guest_count = payload.get("guest_count")
+    try:
+        guest_count = int(guest_count) if guest_count not in (None, "") else None
+        if guest_count is not None and guest_count < 1:
+            raise ValueError
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, "Количество гостей должно быть положительным числом") from exc
+    fee = payload.get("service_fee")
+    fee = None if fee in (None, "") else (1 if str(fee).lower() in {"1", "true", "yes", "да"} else 0)
+    with connect() as db:
+        cursor = db.execute("UPDATE reservations SET reservation_date=?,reservation_time=?,guest_name=?,guest_count=?,phone=?,table_name=?,service_fee=? WHERE id=?", (booking_date.isoformat(), booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, reservation_id))
+        if not cursor.rowcount:
+            raise HTTPException(404, "Бронь не найдена")
+    return {"ok": True}
+
+
+@app.delete("/api/reservations/{reservation_id}")
+def delete_reservation(reservation_id: int, x_telegram_init_data: str | None = Header(default=None)):
+    approved_user(x_telegram_init_data)
+    with connect() as db:
+        cursor = db.execute("DELETE FROM reservations WHERE id=?", (reservation_id,))
+        if not cursor.rowcount:
+            raise HTTPException(404, "Бронь не найдена")
+    return {"ok": True}
+
+
 @app.get("/api/me")
 def me(x_telegram_init_data: str | None = Header(default=None)):
     return row_dict(current_user(x_telegram_init_data))
@@ -522,8 +559,9 @@ async def create_shift(cash_amount: float = Form(0), card_amount: float = Form(0
 @app.get("/api/order-items")
 def order_items(x_telegram_init_data: str | None = Header(default=None)):
     user = approved_user(x_telegram_init_data)
+    order_type = "bar" if user["role"] == "bartender" else "hall"
     with connect() as db:
-        rows = db.execute("SELECT s.id AS supplier_id, s.name AS supplier_name, i.id, i.name FROM suppliers s JOIN supplier_items i ON i.supplier_id=s.id WHERE s.is_active=1 AND i.is_active=1 ORDER BY s.name, i.name").fetchall()
+        rows = db.execute("SELECT s.id AS supplier_id, s.name AS supplier_name, i.id, i.name FROM suppliers s JOIN supplier_items i ON i.supplier_id=s.id WHERE s.is_active=1 AND i.is_active=1 AND s.order_type=? ORDER BY s.name, i.name", (order_type,)).fetchall()
     return [row_dict(row) for row in rows]
 
 @app.post("/api/orders")
@@ -557,17 +595,21 @@ async def create_order(payload: dict = Body(...), x_telegram_init_data: str | No
     return {"ok": True, "id": cursor.lastrowid}
 
 @app.get("/api/admin/suppliers")
-def admin_suppliers(x_telegram_init_data: str | None = Header(default=None)):
+def admin_suppliers(order_type: str = "bar", x_telegram_init_data: str | None = Header(default=None)):
     admin_user(x_telegram_init_data)
+    if order_type not in {"hall", "bar"}:
+        raise HTTPException(400, "Тип заказа должен быть hall или bar")
     with connect() as db:
-        suppliers = [row_dict(r) for r in db.execute("SELECT * FROM suppliers ORDER BY name").fetchall()]; items = [row_dict(r) for r in db.execute("SELECT * FROM supplier_items ORDER BY name").fetchall()]
+        suppliers = [row_dict(r) for r in db.execute("SELECT * FROM suppliers WHERE order_type=? ORDER BY name", (order_type,)).fetchall()]; items = [row_dict(r) for r in db.execute("SELECT i.* FROM supplier_items i JOIN suppliers s ON s.id=i.supplier_id WHERE s.order_type=? ORDER BY i.name", (order_type,)).fetchall()]
     return {"suppliers": suppliers, "items": items}
 
 @app.post("/api/admin/suppliers")
 def add_supplier(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
     admin_user(x_telegram_init_data); name = str(payload.get("name", "")).strip()
     if not name: raise HTTPException(400, "Укажите поставщика")
-    with connect() as db: cursor = db.execute("INSERT INTO suppliers(name, created_at) VALUES (?, ?)", (name, datetime.utcnow().isoformat()))
+    order_type = payload.get("order_type", "bar")
+    if order_type not in {"hall", "bar"}: raise HTTPException(400, "Укажите зал или бар")
+    with connect() as db: cursor = db.execute("INSERT INTO suppliers(name, created_at, order_type) VALUES (?, ?, ?)", (name, datetime.utcnow().isoformat(), order_type))
     return {"id": cursor.lastrowid}
 
 @app.post("/api/admin/supplier-items")
