@@ -91,7 +91,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id), order_type TEXT NOT NULL, comment TEXT NOT NULL DEFAULT '', items TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS shift_hour_confirmations (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id), work_date TEXT NOT NULL, hours REAL NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, processed_at TEXT, UNIQUE(user_id, work_date));
             CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS reservations (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id), reservation_date TEXT NOT NULL, reservation_time TEXT NOT NULL, guest_name TEXT NOT NULL, guest_count INTEGER, phone TEXT NOT NULL DEFAULT '', table_name TEXT NOT NULL DEFAULT '', service_fee INTEGER, created_at TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS reservations (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(id), reservation_date TEXT NOT NULL, reservation_time TEXT NOT NULL, guest_name TEXT NOT NULL, guest_count INTEGER, phone TEXT NOT NULL DEFAULT '', table_name TEXT NOT NULL DEFAULT '', service_fee INTEGER, birthday_discount INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS user_action_limits (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, action TEXT NOT NULL, last_at TEXT NOT NULL, PRIMARY KEY(user_id, action));
             CREATE TABLE IF NOT EXISTS shift_hour_reminders (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, work_date TEXT NOT NULL, sent_at TEXT NOT NULL, PRIMARY KEY(user_id, work_date));
             CREATE TABLE IF NOT EXISTS reservation_digest_messages (user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, digest_date TEXT NOT NULL, message_id INTEGER NOT NULL, is_pinned INTEGER NOT NULL DEFAULT 0, sent_at TEXT NOT NULL, PRIMARY KEY(user_id, digest_date));
@@ -112,6 +112,9 @@ def init_db() -> None:
         supplier_columns = {row[1] for row in db.execute("PRAGMA table_info(suppliers)")}
         if "order_type" not in supplier_columns:
             db.execute("ALTER TABLE suppliers ADD COLUMN order_type TEXT NOT NULL DEFAULT 'bar'")
+        reservation_columns = {row[1] for row in db.execute("PRAGMA table_info(reservations)")}
+        if "birthday_discount" not in reservation_columns:
+            db.execute("ALTER TABLE reservations ADD COLUMN birthday_discount INTEGER NOT NULL DEFAULT 0")
         imported_marker = db.execute("SELECT value FROM app_settings WHERE key = 'spreadsheet_recipes_imported_v1'").fetchone()
         if not imported_marker:
             # Seed the spreadsheet only on a fresh database. Existing recipe

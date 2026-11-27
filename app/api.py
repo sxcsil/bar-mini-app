@@ -67,7 +67,7 @@ def telegram_bot() -> Bot:
     return Bot(settings.bot_token, session=session)
 
 
-def format_reservation_notice(booking_date: date, booking_time: str, guest_name: str, guest_count: int | None, phone: str, table_name: str, service_fee: int | None) -> str:
+def format_reservation_notice(booking_date: date, booking_time: str, guest_name: str, guest_count: int | None, phone: str, table_name: str, service_fee: int | None, birthday_discount: bool = False) -> str:
     lines = [f"Бронь на {booking_date.strftime('%d.%m.%Y')} в {booking_time}", f"Имя: {guest_name}"]
     if guest_count is not None:
         lines.append(f"Гостей: {guest_count}")
@@ -75,9 +75,25 @@ def format_reservation_notice(booking_date: date, booking_time: str, guest_name:
         lines.append(f"Телефон: {phone}")
     if table_name:
         lines.append(f"Стол: {table_name}")
-    if service_fee is not None:
-        lines.append(f"Сервисный сбор 10%: {'да' if service_fee else 'нет'}")
+    if service_fee:
+        lines.append("Сервисный сбор 10%")
+    if birthday_discount:
+        lines.append("Скидка на день рождения: 10%")
     return "\n".join(lines)
+
+
+def reservation_bool(value: object) -> int:
+    return int(value is True or str(value).lower() in {"1", "true", "yes", "да", "on"})
+
+
+def reservation_daily_text(booking_date: date, bookings) -> str:
+    if not bookings:
+        return f"На {booking_date.strftime('%d.%m.%Y')} броней нет."
+    lines = [f"Брони на {booking_date.strftime('%d.%m.%Y')}", ""]
+    for booking in bookings:
+        lines.append(format_reservation_notice(booking_date, booking["reservation_time"], booking["guest_name"], booking["guest_count"], booking["phone"], booking["table_name"], booking["service_fee"], bool(booking["birthday_discount"])))
+        lines.append("")
+    return "\n".join(lines).strip()
 
 
 def reservation_calendar(month: str, x_telegram_init_data: str | None):
@@ -117,15 +133,15 @@ async def add_reservation(payload: dict = Body(...), x_telegram_init_data: str |
             raise ValueError
     except (ValueError, TypeError) as exc:
         raise HTTPException(400, "Количество гостей должно быть положительным числом") from exc
-    fee = payload.get("service_fee")
-    fee = None if fee in (None, "") else (1 if str(fee).lower() in {"1", "true", "yes", "да"} else 0)
+    fee = reservation_bool(payload.get("service_fee"))
+    birthday_discount = reservation_bool(payload.get("birthday_discount"))
     with connect() as db:
-        cursor = db.execute("INSERT INTO reservations(user_id,reservation_date,reservation_time,guest_name,guest_count,phone,table_name,service_fee,created_at) VALUES (?,?,?,?,?,?,?,?,?)", (user["id"], booking_date.isoformat(), booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, datetime.utcnow().isoformat()))
+        cursor = db.execute("INSERT INTO reservations(user_id,reservation_date,reservation_time,guest_name,guest_count,phone,table_name,service_fee,birthday_discount,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (user["id"], booking_date.isoformat(), booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, birthday_discount, datetime.utcnow().isoformat()))
         recipients = db.execute("SELECT telegram_id FROM users WHERE is_active=1 AND status='approved' ORDER BY id").fetchall()
     notification_sent = 0
     if settings.bot_token:
         bot = telegram_bot()
-        text = "Новая бронь добавлена.\n" + format_reservation_notice(booking_date, booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee)
+        text = "Новая бронь добавлена.\n" + format_reservation_notice(booking_date, booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, bool(birthday_discount))
         try:
             for recipient in recipients:
                 try:
@@ -140,8 +156,30 @@ async def add_reservation(payload: dict = Body(...), x_telegram_init_data: str |
     return {"ok": True, "id": cursor.lastrowid, "notification_sent": notification_sent}
 
 
+@app.post("/api/reservations/daily-copy")
+async def send_reservation_daily_copy(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+    user = approved_user(x_telegram_init_data)
+    try:
+        booking_date = date.fromisoformat(str(payload.get("reservation_date", "")))
+    except ValueError as exc:
+        raise HTTPException(400, "Укажите дату броней") from exc
+    if not settings.bot_token:
+        raise HTTPException(503, "Отправка в Telegram не настроена")
+    with connect() as db:
+        bookings = db.execute("SELECT reservation_time,guest_name,guest_count,phone,table_name,service_fee,birthday_discount FROM reservations WHERE reservation_date=? ORDER BY reservation_time,id", (booking_date.isoformat(),)).fetchall()
+    bot = telegram_bot()
+    try:
+        sent = await bot.send_message(user["telegram_id"], reservation_daily_text(booking_date, bookings))
+        return {"ok": True, "message_id": sent.message_id, "count": len(bookings)}
+    except Exception as exc:
+        logging.exception("Не удалось отправить дневную копию броней пользователю %s", user["telegram_id"])
+        raise HTTPException(502, "Не удалось отправить сообщение в Telegram") from exc
+    finally:
+        await bot.session.close()
+
+
 @app.put("/api/reservations/{reservation_id}")
-def update_reservation(reservation_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+async def update_reservation(reservation_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
     approved_user(x_telegram_init_data)
     try:
         booking_date = date.fromisoformat(str(payload.get("reservation_date", "")))
@@ -158,13 +196,27 @@ def update_reservation(reservation_id: int, payload: dict = Body(...), x_telegra
             raise ValueError
     except (ValueError, TypeError) as exc:
         raise HTTPException(400, "Количество гостей должно быть положительным числом") from exc
-    fee = payload.get("service_fee")
-    fee = None if fee in (None, "") else (1 if str(fee).lower() in {"1", "true", "yes", "да"} else 0)
+    fee = reservation_bool(payload.get("service_fee"))
+    birthday_discount = reservation_bool(payload.get("birthday_discount"))
     with connect() as db:
-        cursor = db.execute("UPDATE reservations SET reservation_date=?,reservation_time=?,guest_name=?,guest_count=?,phone=?,table_name=?,service_fee=? WHERE id=?", (booking_date.isoformat(), booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, reservation_id))
+        cursor = db.execute("UPDATE reservations SET reservation_date=?,reservation_time=?,guest_name=?,guest_count=?,phone=?,table_name=?,service_fee=?,birthday_discount=? WHERE id=?", (booking_date.isoformat(), booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, birthday_discount, reservation_id))
         if not cursor.rowcount:
             raise HTTPException(404, "Бронь не найдена")
+        recipients = db.execute("SELECT telegram_id FROM users WHERE is_active=1 AND status='approved' ORDER BY id").fetchall()
+    if settings.bot_token:
+        bot = telegram_bot()
+        text = "Изменение брони. Актуальные данные:\n" + format_reservation_notice(booking_date, booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, bool(birthday_discount))
+        try:
+            for recipient in recipients:
+                try:
+                    await bot.send_message(recipient["telegram_id"], text)
+                except Exception:
+                    logging.exception("Не удалось отправить изменение брони %s пользователю %s", reservation_id, recipient["telegram_id"])
+        finally:
+            await bot.session.close()
     return {"ok": True}
+
+
 
 
 @app.delete("/api/reservations/{reservation_id}")

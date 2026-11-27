@@ -213,7 +213,7 @@ async def reservation_digest_loop(bot: Bot) -> None:
         if (now.hour, now.minute) >= (11, 0):
             with connect() as db:
                 recipients = db.execute("SELECT u.id,u.telegram_id FROM users u WHERE u.is_active=1 AND u.status='approved' AND NOT EXISTS (SELECT 1 FROM reservation_digest_messages d WHERE d.user_id=u.id AND d.digest_date=?) ORDER BY u.id", (today,)).fetchall()
-                bookings = db.execute("SELECT reservation_time,guest_name,guest_count,phone,table_name,service_fee FROM reservations WHERE reservation_date=? ORDER BY reservation_time,id", (today,)).fetchall()
+                bookings = db.execute("SELECT reservation_time,guest_name,guest_count,phone,table_name,service_fee,birthday_discount FROM reservations WHERE reservation_date=? ORDER BY reservation_time,id", (today,)).fetchall()
             if bookings:
                 details = []
                 for booking in bookings:
@@ -224,8 +224,10 @@ async def reservation_digest_loop(bot: Bot) -> None:
                         line += f", стол {booking['table_name']}"
                     if booking["phone"]:
                         line += f", тел. {booking['phone']}"
-                    if booking["service_fee"] is not None:
-                        line += f", сервисный сбор 10%: {'да' if booking['service_fee'] else 'нет'}"
+                    if booking["service_fee"]:
+                        line += ", сервисный сбор 10%"
+                    if booking["birthday_discount"]:
+                        line += ", скидка на день рождения 10%"
                     details.append(line)
                 text = f"Брони на сегодня, {now.strftime('%d.%m.%Y')}:\n\n" + "\n".join(details)
             else:

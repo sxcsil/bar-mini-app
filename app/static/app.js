@@ -238,7 +238,7 @@ async function loadReservations() {
 }
 function renderReservationDay(day, rows) {
   const panel = $("#reservation-day"); panel.hidden = false;
-  panel.innerHTML = `<h3>${new Date(`${day}T00:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" })}</h3>${rows.map((item) => `<article class="reservation-card"><div class="reservation-card-main"><b>${escapeHtml(item.reservation_time)} · ${escapeHtml(item.guest_name)}</b><div>${item.guest_count ? `${item.guest_count} чел.` : ""}${item.phone ? ` · ${escapeHtml(item.phone)}` : ""}${item.table_name ? ` · стол ${escapeHtml(item.table_name)}` : ""}</div>${item.service_fee === null ? "" : `<small>Сервисный сбор 10%: ${item.service_fee ? "да" : "нет"}</small>`}</div><div class="reservation-card-actions"><button class="mini-button" type="button" data-edit-reservation="${item.id}">Изменить</button><button class="mini-button danger" type="button" data-delete-reservation="${item.id}">Удалить</button></div></article>`).join("") || '<p class="muted">На этот день броней пока нет.</p>'}`;
+  panel.innerHTML = `<div class="reservation-day-head"><h3>${new Date(`${day}T00:00:00`).toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" })}</h3><button class="secondary" type="button" data-send-daily-copy="${day}">Отправить список мне в Telegram</button></div>${rows.map((item) => `<article class="reservation-card"><div class="reservation-card-main"><b>${escapeHtml(item.reservation_time)} · ${escapeHtml(item.guest_name)}</b><div>${item.guest_count ? `${item.guest_count} чел.` : ""}${item.phone ? ` · ${escapeHtml(item.phone)}` : ""}${item.table_name ? ` · стол ${escapeHtml(item.table_name)}` : ""}</div>${item.service_fee ? '<small>Сервисный сбор 10%</small>' : ""}${item.birthday_discount ? '<small>День рождения −10%</small>' : ""}</div><div class="reservation-card-actions"><button class="mini-button" type="button" data-edit-reservation="${item.id}">Изменить</button><button class="mini-button danger" type="button" data-delete-reservation="${item.id}">Удалить</button></div></article>`).join("") || '<p class="muted">На этот день броней пока нет.</p>'}`;
   $("#reservation-form").hidden = false; $("#reservation-date").value = day;
 }
 $("#reservation-prev")?.addEventListener("click", () => { reservationDate.setMonth(reservationDate.getMonth() - 1); loadReservations(); });
@@ -262,6 +262,8 @@ function startReservationEdit(id) {
   form.elements.phone.value = item.phone || "";
   form.elements.table_name.value = item.table_name || "";
   form.elements.service_fee.value = item.service_fee === null ? "" : String(item.service_fee);
+  form.elements.service_fee.checked = Boolean(item.service_fee);
+  form.elements.birthday_discount.checked = Boolean(item.birthday_discount);
   form.querySelector("h3").textContent = "Редактировать бронь";
   $("#reservation-submit").textContent = "Сохранить изменения";
   $("#reservation-cancel-edit").hidden = false;
@@ -278,6 +280,16 @@ function cancelReservationEdit() {
 }
 $("#reservation-cancel-edit")?.addEventListener("click", cancelReservationEdit);
 $("#reservation-day")?.addEventListener("click", async (event) => {
+  const copy = event.target.closest("[data-send-daily-copy]");
+  if (copy) {
+    copy.disabled = true;
+    try {
+      await adminRequest("/api/reservations/daily-copy", { method: "POST", body: JSON.stringify({ reservation_date: copy.dataset.sendDailyCopy }) });
+      notify("Список броней отправлен вам в личные сообщения.");
+    } catch { notify("Не удалось отправить список броней. Сначала откройте бота в Telegram."); }
+    finally { copy.disabled = false; }
+    return;
+  }
   const edit = event.target.closest("[data-edit-reservation]");
   if (edit) { startReservationEdit(Number(edit.dataset.editReservation)); return; }
   const remove = event.target.closest("[data-delete-reservation]");
