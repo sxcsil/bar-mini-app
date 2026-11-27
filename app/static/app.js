@@ -261,7 +261,6 @@ function startReservationEdit(id) {
   form.elements.guest_count.value = item.guest_count ?? "";
   form.elements.phone.value = item.phone || "";
   form.elements.table_name.value = item.table_name || "";
-  form.elements.service_fee.value = item.service_fee === null ? "" : String(item.service_fee);
   form.elements.service_fee.checked = Boolean(item.service_fee);
   form.elements.birthday_discount.checked = Boolean(item.birthday_discount);
   form.querySelector("h3").textContent = "Редактировать бронь";
@@ -299,7 +298,11 @@ $("#reservation-day")?.addEventListener("click", async (event) => {
 });
 $("#reservation-form")?.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const form = event.currentTarget; const values = Object.fromEntries(new FormData(form)); const editingId = editingReservationId;
+  const form = event.currentTarget; const values = Object.fromEntries(new FormData(form));
+  // FormData omits unchecked checkboxes, so always send both states explicitly.
+  values.service_fee = form.elements.namedItem("service_fee").checked;
+  values.birthday_discount = form.elements.namedItem("birthday_discount").checked;
+  const editingId = editingReservationId;
   const previousDate = editingId ? currentReservationRows.find((row) => row.id === editingId)?.reservation_date : null;
   const response = await fetch(editingId ? `/api/reservations/${editingId}` : "/api/reservations", { method: editingId ? "PUT" : "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(values) });
   const result = await response.json().catch(() => ({}));
