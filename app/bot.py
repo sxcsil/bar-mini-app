@@ -201,7 +201,7 @@ async def reservation_digest_loop(bot: Bot) -> None:
         now = datetime.now(timezone)
         today = now.date().isoformat()
         with connect() as db:
-            expired = db.execute("SELECT d.user_id,d.message_id,u.telegram_id FROM reservation_digest_messages d JOIN users u ON u.id=d.user_id WHERE d.digest_date < ? AND d.is_pinned=1", (today,)).fetchall()
+            expired = db.execute("SELECT d.user_id,d.message_id,u.telegram_id FROM reservation_digest_messages d JOIN users u ON u.id=d.user_id WHERE d.is_pinned=1 AND (d.digest_date < ? OR u.role NOT IN ('admin','waiter'))", (today,)).fetchall()
         for item in expired:
             try:
                 await bot.unpin_chat_message(chat_id=item["telegram_id"], message_id=item["message_id"])
@@ -212,7 +212,7 @@ async def reservation_digest_loop(bot: Bot) -> None:
 
         if (now.hour, now.minute) >= (11, 0):
             with connect() as db:
-                recipients = db.execute("SELECT u.id,u.telegram_id FROM users u WHERE u.is_active=1 AND u.status='approved' AND NOT EXISTS (SELECT 1 FROM reservation_digest_messages d WHERE d.user_id=u.id AND d.digest_date=?) ORDER BY u.id", (today,)).fetchall()
+                recipients = db.execute("SELECT u.id,u.telegram_id FROM users u WHERE u.is_active=1 AND u.status='approved' AND u.role IN ('admin','waiter') AND NOT EXISTS (SELECT 1 FROM reservation_digest_messages d WHERE d.user_id=u.id AND d.digest_date=?) ORDER BY u.id", (today,)).fetchall()
                 bookings = db.execute("SELECT reservation_time,guest_name,guest_count,phone,table_name,service_fee,birthday_discount FROM reservations WHERE reservation_date=? ORDER BY reservation_time,id", (today,)).fetchall()
             if bookings:
                 details = []
@@ -276,7 +276,7 @@ async def reservation_reminder_loop(bot: Bot) -> None:
             with connect() as db:
                 recipients = db.execute(
                     "SELECT u.id,u.telegram_id FROM users u WHERE u.is_active=1 "
-                    "AND u.status='approved' AND NOT EXISTS ("
+                    "AND u.status='approved' AND u.role IN ('admin','waiter') AND NOT EXISTS ("
                     "SELECT 1 FROM reservation_reminder_deliveries d "
                     "WHERE d.reservation_id=? AND d.user_id=u.id) ORDER BY u.id",
                     (booking["id"],),

@@ -62,6 +62,13 @@ def admin_user(init_data: str | None):
     return user
 
 
+def reservation_user(init_data: str | None):
+    user = approved_user(init_data)
+    if user["role"] not in {"admin", "waiter"}:
+        raise HTTPException(403, "Раздел броней доступен только администраторам и официантам")
+    return user
+
+
 def telegram_bot() -> Bot:
     session = AiohttpSession(proxy=settings.bot_proxy) if settings.bot_proxy else AiohttpSession()
     return Bot(settings.bot_token, session=session)
@@ -103,7 +110,8 @@ async def refresh_pinned_reservation_digest(booking_date: date) -> None:
     with connect() as db:
         pinned = db.execute(
             "SELECT d.message_id,u.telegram_id FROM reservation_digest_messages d "
-            "JOIN users u ON u.id=d.user_id WHERE d.digest_date=? AND d.is_pinned=1",
+            "JOIN users u ON u.id=d.user_id WHERE d.digest_date=? AND d.is_pinned=1 "
+            "AND u.role IN ('admin','waiter')",
             (booking_date.isoformat(),),
         ).fetchall()
         bookings = db.execute(
@@ -126,7 +134,7 @@ async def refresh_pinned_reservation_digest(booking_date: date) -> None:
 
 
 def reservation_calendar(month: str, x_telegram_init_data: str | None):
-    approved_user(x_telegram_init_data)
+    reservation_user(x_telegram_init_data)
     month = month or date.today().strftime("%Y-%m")
     try:
         datetime.strptime(month, "%Y-%m")
@@ -144,7 +152,7 @@ def get_reservations(month: str = "", x_telegram_init_data: str | None = Header(
 
 @app.post("/api/reservations")
 async def add_reservation(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
-    user = approved_user(x_telegram_init_data)
+    user = reservation_user(x_telegram_init_data)
     try:
         booking_date = date.fromisoformat(str(payload.get("reservation_date", "")))
         booking_time = datetime.strptime(str(payload.get("reservation_time", "")), "%H:%M").time()
@@ -172,7 +180,7 @@ async def add_reservation(payload: dict = Body(...), x_telegram_init_data: str |
 
 @app.post("/api/reservations/daily-copy")
 async def send_reservation_daily_copy(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
-    user = approved_user(x_telegram_init_data)
+    user = reservation_user(x_telegram_init_data)
     try:
         booking_date = date.fromisoformat(str(payload.get("reservation_date", "")))
     except ValueError as exc:
@@ -194,7 +202,7 @@ async def send_reservation_daily_copy(payload: dict = Body(...), x_telegram_init
 
 @app.put("/api/reservations/{reservation_id}")
 async def update_reservation(reservation_id: int, payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
-    approved_user(x_telegram_init_data)
+    reservation_user(x_telegram_init_data)
     try:
         booking_date = date.fromisoformat(str(payload.get("reservation_date", "")))
         booking_time = datetime.strptime(str(payload.get("reservation_time", "")), "%H:%M").time()
@@ -230,7 +238,7 @@ async def update_reservation(reservation_id: int, payload: dict = Body(...), x_t
 
 @app.delete("/api/reservations/{reservation_id}")
 async def delete_reservation(reservation_id: int, x_telegram_init_data: str | None = Header(default=None)):
-    approved_user(x_telegram_init_data)
+    reservation_user(x_telegram_init_data)
     with connect() as db:
         existing = db.execute("SELECT reservation_date FROM reservations WHERE id=?", (reservation_id,)).fetchone()
         if not existing:
