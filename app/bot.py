@@ -194,6 +194,58 @@ async def shift_hours_reminder_loop(bot: Bot) -> None:
         await asyncio.sleep(45)
 
 
+async def reservation_digest_loop(bot: Bot) -> None:
+    """Send the daily reservation list at 11:00 MSK and unpin it at midnight."""
+    timezone = ZoneInfo("Europe/Moscow")
+    while True:
+        now = datetime.now(timezone)
+        today = now.date().isoformat()
+        with connect() as db:
+            expired = db.execute("SELECT d.user_id,d.message_id,u.telegram_id FROM reservation_digest_messages d JOIN users u ON u.id=d.user_id WHERE d.digest_date < ? AND d.is_pinned=1", (today,)).fetchall()
+        for item in expired:
+            try:
+                await bot.unpin_chat_message(chat_id=item["telegram_id"], message_id=item["message_id"])
+                with connect() as db:
+                    db.execute("UPDATE reservation_digest_messages SET is_pinned=0 WHERE user_id=? AND digest_date < ?", (item["user_id"], today))
+            except Exception:
+                logging.exception("Не удалось открепить ежедневный список броней в чате %s", item["user_id"])
+
+        if (now.hour, now.minute) >= (11, 0):
+            with connect() as db:
+                recipients = db.execute("SELECT u.id,u.telegram_id FROM users u WHERE u.is_active=1 AND u.status='approved' AND NOT EXISTS (SELECT 1 FROM reservation_digest_messages d WHERE d.user_id=u.id AND d.digest_date=?) ORDER BY u.id", (today,)).fetchall()
+                bookings = db.execute("SELECT reservation_time,guest_name,guest_count,phone,table_name,service_fee FROM reservations WHERE reservation_date=? ORDER BY reservation_time,id", (today,)).fetchall()
+            if bookings:
+                details = []
+                for booking in bookings:
+                    line = f"• {booking['reservation_time']} — {booking['guest_name']}"
+                    if booking["guest_count"] is not None:
+                        line += f", {booking['guest_count']} чел."
+                    if booking["table_name"]:
+                        line += f", стол {booking['table_name']}"
+                    if booking["phone"]:
+                        line += f", тел. {booking['phone']}"
+                    if booking["service_fee"] is not None:
+                        line += f", сервисный сбор 10%: {'да' if booking['service_fee'] else 'нет'}"
+                    details.append(line)
+                text = f"Брони на сегодня, {now.strftime('%d.%m.%Y')}:\n\n" + "\n".join(details)
+            else:
+                text = f"На сегодня, {now.strftime('%d.%m.%Y')}, броней нет."
+            for user in recipients:
+                try:
+                    sent = await bot.send_message(user["telegram_id"], text)
+                    with connect() as db:
+                        db.execute("INSERT OR IGNORE INTO reservation_digest_messages(user_id,digest_date,message_id,is_pinned,sent_at) VALUES (?,?,?,0,?)", (user["id"], today, sent.message_id, datetime.utcnow().isoformat()))
+                    try:
+                        await bot.pin_chat_message(chat_id=user["telegram_id"], message_id=sent.message_id, disable_notification=True)
+                        with connect() as db:
+                            db.execute("UPDATE reservation_digest_messages SET is_pinned=1 WHERE user_id=? AND digest_date=?", (user["id"], today))
+                    except Exception:
+                        logging.exception("Ежедневный список броней отправлен, но не закреплён в чате %s", user["telegram_id"])
+                except Exception:
+                    logging.exception("Не удалось отправить список броней пользователю %s за %s", user["telegram_id"], today)
+        await asyncio.sleep(45)
+
+
 async def run_bot() -> None:
     if not settings.bot_token:
         logging.warning("BOT_TOKEN is empty; Telegram bot is disabled")
@@ -209,11 +261,13 @@ async def run_bot() -> None:
             await bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="Приложение", web_app=WebAppInfo(url=menu_url)))
             logging.info("Telegram menu button updated: %s", menu_url)
             reminder_task = asyncio.create_task(shift_hours_reminder_loop(bot))
+            reservation_task = asyncio.create_task(reservation_digest_loop(bot))
             try:
                 await dp.start_polling(bot)
             finally:
                 reminder_task.cancel()
-                await asyncio.gather(reminder_task, return_exceptions=True)
+                reservation_task.cancel()
+                await asyncio.gather(reminder_task, reservation_task, return_exceptions=True)
             return
         except TelegramNetworkError as exc:
             logging.error("Telegram недоступен: %s. Повтор через 10 секунд.", exc)

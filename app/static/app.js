@@ -237,7 +237,14 @@ function renderReservationDay(day, rows) {
 }
 $("#reservation-prev")?.addEventListener("click", () => { reservationDate.setMonth(reservationDate.getMonth() - 1); loadReservations(); });
 $("#reservation-next")?.addEventListener("click", () => { reservationDate.setMonth(reservationDate.getMonth() + 1); loadReservations(); });
-$("#reservation-form")?.addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const values = Object.fromEntries(new FormData(form)); const response = await fetch("/api/reservations", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(values) }); const result = await response.json().catch(() => ({})); $("#reservation-result").textContent = response.ok ? "Бронь сохранена." : (result.detail || "Не удалось сохранить бронь."); if (response.ok) { const savedDate = values.reservation_date; form.reset(); selectedReservationDate = savedDate; await loadReservations(); } });
+$("#reservation-form")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.target.tagName === "BUTTON") return;
+  event.preventDefault();
+  const fields = [...event.currentTarget.querySelectorAll("input:not([type='hidden']), select, textarea")].filter((field) => !field.disabled && field.getClientRects().length > 0);
+  const index = fields.indexOf(event.target);
+  if (index >= 0 && fields.length) fields[(index + 1) % fields.length].focus();
+});
+$("#reservation-form")?.addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const values = Object.fromEntries(new FormData(form)); const response = await fetch("/api/reservations", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(values) }); const result = await response.json().catch(() => ({})); $("#reservation-result").textContent = response.ok ? (result.notification_sent ? `Бронь сохранена. Уведомление отправлено ${result.notification_sent} сотрудникам.` : "Бронь сохранена, но уведомление сотрудникам не доставлено.") : (result.detail || "Не удалось сохранить бронь."); if (response.ok) { const savedDate = values.reservation_date; form.reset(); selectedReservationDate = savedDate; await loadReservations(); } });
 
 function coolButton(button) { if (!button || button.dataset.cooldownActive === "1") return; button.dataset.cooldownActive = "1"; button.disabled = true; button.classList.add("cooldown-active"); window.setTimeout(() => { button.disabled = false; button.dataset.cooldownActive = "0"; button.classList.remove("cooldown-active"); }, 5000); }
 // Do not disable submit buttons during click capture: that can cancel the

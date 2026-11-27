@@ -67,6 +67,19 @@ def telegram_bot() -> Bot:
     return Bot(settings.bot_token, session=session)
 
 
+def format_reservation_notice(booking_date: date, booking_time: str, guest_name: str, guest_count: int | None, phone: str, table_name: str, service_fee: int | None) -> str:
+    lines = [f"Бронь на {booking_date.strftime('%d.%m.%Y')} в {booking_time}", f"Имя: {guest_name}"]
+    if guest_count is not None:
+        lines.append(f"Гостей: {guest_count}")
+    if phone:
+        lines.append(f"Телефон: {phone}")
+    if table_name:
+        lines.append(f"Стол: {table_name}")
+    if service_fee is not None:
+        lines.append(f"Сервисный сбор 10%: {'да' if service_fee else 'нет'}")
+    return "\n".join(lines)
+
+
 def reservation_calendar(month: str, x_telegram_init_data: str | None):
     approved_user(x_telegram_init_data)
     month = month or date.today().strftime("%Y-%m")
@@ -85,7 +98,7 @@ def get_reservations(month: str = "", x_telegram_init_data: str | None = Header(
 
 
 @app.post("/api/reservations")
-def add_reservation(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
+async def add_reservation(payload: dict = Body(...), x_telegram_init_data: str | None = Header(default=None)):
     user = approved_user(x_telegram_init_data)
     try:
         booking_date = date.fromisoformat(str(payload.get("reservation_date", "")))
@@ -108,7 +121,23 @@ def add_reservation(payload: dict = Body(...), x_telegram_init_data: str | None 
     fee = None if fee in (None, "") else (1 if str(fee).lower() in {"1", "true", "yes", "да"} else 0)
     with connect() as db:
         cursor = db.execute("INSERT INTO reservations(user_id,reservation_date,reservation_time,guest_name,guest_count,phone,table_name,service_fee,created_at) VALUES (?,?,?,?,?,?,?,?,?)", (user["id"], booking_date.isoformat(), booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, datetime.utcnow().isoformat()))
-    return {"ok": True, "id": cursor.lastrowid}
+        recipients = db.execute("SELECT telegram_id FROM users WHERE is_active=1 AND status='approved' ORDER BY id").fetchall()
+    notification_sent = 0
+    if settings.bot_token:
+        bot = telegram_bot()
+        text = "Новая бронь добавлена.\n" + format_reservation_notice(booking_date, booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee)
+        try:
+            for recipient in recipients:
+                try:
+                    await bot.send_message(recipient["telegram_id"], text)
+                    notification_sent += 1
+                except Exception:
+                    logging.exception("Не удалось отправить уведомление о брони пользователю %s (бронь %s)", recipient["telegram_id"], cursor.lastrowid)
+        finally:
+            await bot.session.close()
+    else:
+        logging.error("Бронь %s сохранена, но уведомления не отправлены: BOT_TOKEN не настроен", cursor.lastrowid)
+    return {"ok": True, "id": cursor.lastrowid, "notification_sent": notification_sent}
 
 
 @app.get("/api/me")
