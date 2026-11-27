@@ -306,7 +306,7 @@ $("#reservation-form")?.addEventListener("submit", async (event) => {
   const previousDate = editingId ? currentReservationRows.find((row) => row.id === editingId)?.reservation_date : null;
   const response = await fetch(editingId ? `/api/reservations/${editingId}` : "/api/reservations", { method: editingId ? "PUT" : "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(values) });
   const result = await response.json().catch(() => ({}));
-  $("#reservation-result").textContent = response.ok ? (editingId ? "Изменения сохранены." : (result.notification_sent ? `Бронь сохранена. Уведомление отправлено ${result.notification_sent} сотрудникам.` : "Бронь сохранена, но уведомление сотрудникам не доставлено.")) : (result.detail || "Не удалось сохранить бронь.");
+  $("#reservation-result").textContent = response.ok ? "Бронь сохранена. Закреплённый список обновлён, если он уже отправлен." : (result.detail || "Не удалось сохранить бронь.");
   if (response.ok) { const savedDate = values.reservation_date; editingReservationId = null; form.reset(); form.querySelector("h3").textContent = "Новая бронь"; $("#reservation-submit").textContent = "Сохранить бронь"; $("#reservation-cancel-edit").hidden = true; selectedReservationDate = savedDate; if (previousDate && previousDate.slice(0, 7) !== savedDate.slice(0, 7)) { reservationDate = new Date(`${savedDate.slice(0, 7)}-01T00:00:00`); } await loadReservations(); }
 });
 

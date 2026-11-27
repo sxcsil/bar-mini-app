@@ -96,6 +96,35 @@ def reservation_daily_text(booking_date: date, bookings) -> str:
     return "\n".join(lines).strip()
 
 
+async def refresh_pinned_reservation_digest(booking_date: date) -> None:
+    """Silently edit employees' already pinned daily digest, if one exists."""
+    if not settings.bot_token:
+        return
+    with connect() as db:
+        pinned = db.execute(
+            "SELECT d.message_id,u.telegram_id FROM reservation_digest_messages d "
+            "JOIN users u ON u.id=d.user_id WHERE d.digest_date=? AND d.is_pinned=1",
+            (booking_date.isoformat(),),
+        ).fetchall()
+        bookings = db.execute(
+            "SELECT reservation_time,guest_name,guest_count,phone,table_name,service_fee,birthday_discount "
+            "FROM reservations WHERE reservation_date=? ORDER BY reservation_time,id",
+            (booking_date.isoformat(),),
+        ).fetchall()
+    if not pinned:
+        return
+    text = reservation_daily_text(booking_date, bookings)
+    bot = telegram_bot()
+    try:
+        for item in pinned:
+            try:
+                await bot.edit_message_text(text, chat_id=item["telegram_id"], message_id=item["message_id"])
+            except Exception:
+                logging.exception("Не удалось обновить закреплённую сводку броней за %s в чате %s", booking_date, item["telegram_id"])
+    finally:
+        await bot.session.close()
+
+
 def reservation_calendar(month: str, x_telegram_init_data: str | None):
     approved_user(x_telegram_init_data)
     month = month or date.today().strftime("%Y-%m")
@@ -137,23 +166,8 @@ async def add_reservation(payload: dict = Body(...), x_telegram_init_data: str |
     birthday_discount = reservation_bool(payload.get("birthday_discount"))
     with connect() as db:
         cursor = db.execute("INSERT INTO reservations(user_id,reservation_date,reservation_time,guest_name,guest_count,phone,table_name,service_fee,birthday_discount,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)", (user["id"], booking_date.isoformat(), booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, birthday_discount, datetime.utcnow().isoformat()))
-        recipients = db.execute("SELECT telegram_id FROM users WHERE is_active=1 AND status='approved' ORDER BY id").fetchall()
-    notification_sent = 0
-    if settings.bot_token:
-        bot = telegram_bot()
-        text = "Новая бронь добавлена.\n" + format_reservation_notice(booking_date, booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, bool(birthday_discount))
-        try:
-            for recipient in recipients:
-                try:
-                    await bot.send_message(recipient["telegram_id"], text)
-                    notification_sent += 1
-                except Exception:
-                    logging.exception("Не удалось отправить уведомление о брони пользователю %s (бронь %s)", recipient["telegram_id"], cursor.lastrowid)
-        finally:
-            await bot.session.close()
-    else:
-        logging.error("Бронь %s сохранена, но уведомления не отправлены: BOT_TOKEN не настроен", cursor.lastrowid)
-    return {"ok": True, "id": cursor.lastrowid, "notification_sent": notification_sent}
+    await refresh_pinned_reservation_digest(booking_date)
+    return {"ok": True, "id": cursor.lastrowid}
 
 
 @app.post("/api/reservations/daily-copy")
@@ -199,33 +213,31 @@ async def update_reservation(reservation_id: int, payload: dict = Body(...), x_t
     fee = reservation_bool(payload.get("service_fee"))
     birthday_discount = reservation_bool(payload.get("birthday_discount"))
     with connect() as db:
-        cursor = db.execute("UPDATE reservations SET reservation_date=?,reservation_time=?,guest_name=?,guest_count=?,phone=?,table_name=?,service_fee=?,birthday_discount=? WHERE id=?", (booking_date.isoformat(), booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, birthday_discount, reservation_id))
-        if not cursor.rowcount:
+        existing = db.execute("SELECT reservation_date FROM reservations WHERE id=?", (reservation_id,)).fetchone()
+        if not existing:
             raise HTTPException(404, "Бронь не найдена")
-        recipients = db.execute("SELECT telegram_id FROM users WHERE is_active=1 AND status='approved' ORDER BY id").fetchall()
-    if settings.bot_token:
-        bot = telegram_bot()
-        text = "Изменение брони. Актуальные данные:\n" + format_reservation_notice(booking_date, booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, bool(birthday_discount))
-        try:
-            for recipient in recipients:
-                try:
-                    await bot.send_message(recipient["telegram_id"], text)
-                except Exception:
-                    logging.exception("Не удалось отправить изменение брони %s пользователю %s", reservation_id, recipient["telegram_id"])
-        finally:
-            await bot.session.close()
+        old_date = date.fromisoformat(existing["reservation_date"])
+        cursor = db.execute("UPDATE reservations SET reservation_date=?,reservation_time=?,guest_name=?,guest_count=?,phone=?,table_name=?,service_fee=?,birthday_discount=? WHERE id=?", (booking_date.isoformat(), booking_time.strftime("%H:%M"), guest_name, guest_count, str(payload.get("phone", "")).strip(), str(payload.get("table_name", "")).strip(), fee, birthday_discount, reservation_id))
+    await refresh_pinned_reservation_digest(old_date)
+    if booking_date != old_date:
+        await refresh_pinned_reservation_digest(booking_date)
     return {"ok": True}
 
 
 
 
 @app.delete("/api/reservations/{reservation_id}")
-def delete_reservation(reservation_id: int, x_telegram_init_data: str | None = Header(default=None)):
+async def delete_reservation(reservation_id: int, x_telegram_init_data: str | None = Header(default=None)):
     approved_user(x_telegram_init_data)
     with connect() as db:
+        existing = db.execute("SELECT reservation_date FROM reservations WHERE id=?", (reservation_id,)).fetchone()
+        if not existing:
+            raise HTTPException(404, "Бронь не найдена")
+        booking_date = date.fromisoformat(existing["reservation_date"])
         cursor = db.execute("DELETE FROM reservations WHERE id=?", (reservation_id,))
         if not cursor.rowcount:
             raise HTTPException(404, "Бронь не найдена")
+    await refresh_pinned_reservation_digest(booking_date)
     return {"ok": True}
 
 
